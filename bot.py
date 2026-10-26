@@ -528,4 +528,4 @@ def send(item, important):
         except urllib.error.HTTPError as ex:
             if ex.code == 429:
                 raise
-        except Except
+         except Exception:
