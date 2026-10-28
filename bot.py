@@ -937,7 +937,7 @@ def main():
     
     state = load_state()
     seen = set(state["seen"])
-        fails = state["fails"]
+    fails = state["fails"]
     today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
     if state["daily"].get("date") != today:
         state["daily"] = {"date": today, "regular": 0, "guides": 0}
