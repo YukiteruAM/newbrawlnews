@@ -1,5 +1,4 @@
-"""Бот новостей Brawl Stars: собирает новости из первоисточников,
-переводит на русский и публикует в Telegram-канал. Дубли отсекаются."""
+"""Бот новостей Brawl Stars"""
 import os, sys, re, io, json, html, time, uuid, datetime, random, math
 import urllib.request, urllib.parse, urllib.error
 import xml.etree.ElementTree as ET
@@ -424,12 +423,12 @@ def generate_guide_image(b, gadget_name, sp_name):
         role = (b.get("class") or {}).get("name", "Боец")
         draw.text((65, 410), f"Класс: {role}", font=font_class, fill="#ffcc00", stroke_width=2, stroke_fill="black")
 
-        img_url = b.get("imageUrl2") or b.get("imageUrl")
+        img_url = b.get("imageUrl")
         if img_url:
             try:
                 b_img = Image.open(io.BytesIO(download(img_url))).convert("RGBA")
-                b_img.thumbnail((650, 650))
-                bg.paste(b_img, (430, 350), b_img)
+                b_img.thumbnail((700, 700))
+                bg.paste(b_img, (400, 320), b_img)
             except Exception: pass
 
         draw.text((60, 750), "РЕКОМЕНДУЕМЫЙ БИЛД", font=font_label, fill="#ffcc00", stroke_width=2, stroke_fill="black")
@@ -438,16 +437,20 @@ def generate_guide_image(b, gadget_name, sp_name):
         
         if b.get("gadgets"):
             try:
-                g_img = Image.open(io.BytesIO(download(f"https://cdn.brawlify.com/gadgets/{b['gadgets'][0]['id']}.png"))).convert("RGBA")
-                g_img.thumbnail((90, 90))
-                bg.paste(g_img, (70, 810), g_img)
-            except: pass
+                g_url = b['gadgets'][0].get('imageUrl')
+                if g_url:
+                    g_img = Image.open(io.BytesIO(download(g_url))).convert("RGBA")
+                    g_img.thumbnail((90, 90))
+                    bg.paste(g_img, (70, 810), g_img)
+            except Exception: pass
         if b.get("starPowers"):
             try:
-                s_img = Image.open(io.BytesIO(download(f"https://cdn.brawlify.com/star-powers/{b['starPowers'][0]['id']}.png"))).convert("RGBA")
-                s_img.thumbnail((90, 90))
-                bg.paste(s_img, (70, 940), s_img)
-            except: pass
+                sp_url = b['starPowers'][0].get('imageUrl')
+                if sp_url:
+                    s_img = Image.open(io.BytesIO(download(sp_url))).convert("RGBA")
+                    s_img.thumbnail((90, 90))
+                    bg.paste(s_img, (70, 940), s_img)
+            except Exception: pass
 
         draw.text((200, 830), gadget_name, font=font_desc, fill="white", stroke_width=2, stroke_fill="black")
         draw.text((200, 960), sp_name, font=font_desc, fill="white", stroke_width=2, stroke_fill="black")
@@ -496,7 +499,6 @@ def generate_meta_image(rows, images):
         return out.getvalue()
     except Exception as e:
         return b""
-
 def fetch_guide(src, state):
     try:
         if state.get("daily", {}).get("guides", 0) >= 1:
@@ -521,10 +523,9 @@ def fetch_guide(src, state):
         img_bytes = generate_guide_image(b, g_name, s_name)
         
         text = (
-            f"📚 <b>Гайд на бойца: {b['name']}</b>\n\n"
-            f"🛠 <b>Гаджет:</b> {g_name}\n"
-            f"⭐ <b>Звездная сила:</b> {s_name}\n\n"
-            f"💡 <b>Совет:</b> Играйте на своей дистанции, следите за картой и не стесняйтесь отступать для восстановления ХП."
+            f"🛠 Гаджет: {g_name}\n"
+            f"⭐ Звездная сила: {s_name}\n\n"
+            f"💡 Совет: Играйте на своей дистанции, следите за картой и не стесняйтесь отступать для восстановления ХП."
         )
         
         return [{
@@ -535,7 +536,7 @@ def fetch_guide(src, state):
             "link": f"https://brawlify.com/stats/brawlers/{b['id']}",
             "force_link": True,
             "topic": ("📚", "Гайд", "гайд"),
-            "custom_disclaimer": "\n\n⚠️ <i>Это универсальная база. В зависимости от карты, режима и врагов на поле, билд и гаджеты стоит менять по ситуации.</i>"
+            "custom_disclaimer": "\n\n⚠️ Это универсальная база. В зависимости от карты и врагов, билд стоит менять."
         }]
     except Exception as ex:
         return []
@@ -559,6 +560,7 @@ def fetch_all(sources, state):
             try: out[s["name"]] = futs[s["name"]].result(timeout=120)
             except Exception as ex: out[s["name"]] = None
     return out
+
 def _fatal_check(ex):
     if ex.code in (401, 403): raise FatalError("Telegram отказал.")
 
@@ -816,7 +818,7 @@ def load_classes(state):
         images = {}
         for b in data.get("list", []):
             cls = (b.get("class") or {}).get("name")
-            img = b.get("imageUrl2") or b.get("imageUrl")
+            img = b.get("imageUrl")
             if b.get("name"):
                 if cls: mapping[b["name"].upper()] = cls
                 if img: images[b["name"].upper()] = img
@@ -932,41 +934,3 @@ def main():
         if not items: continue
         if key not in state["sources"]:
             for it in items: mark(it["id"])
-            state["sources"].append(key)
-            continue
-        for it in items:
-            if it["id"] not in seen: queue.append((it, src["important"], key))
-
-    queue.sort(key=lambda x: not x[1])
-    sent = 0
-    for it, important, key in queue:
-        if sent >= MAX_PER_RUN or time.time() - started > TIME_BUDGET: break
-        if not important and state["daily"]["regular"] >= DAILY_REGULAR_LIMIT:
-            mark(it["id"]); continue
-        
-        if key == "brawlify-guides" and state["daily"].get("guides", 0) >= 1:
-            mark(it["id"]); continue
-
-        try:
-            phrase = pick_phrase(it)
-            send(it, important, phrase)
-        except Exception as ex:
-            print("Ошибка отправки:", ex); continue
-
-        mark(it["id"])
-        sent += 1
-        if key == "brawlify-guides":
-            state["daily"]["guides"] = state["daily"].get("guides", 0) + 1
-        elif not important:
-            state["daily"]["regular"] += 1
-        save_state(state)
-        time.sleep(PAUSE)
-
-    try: maybe_post_meta(state, started, force=FORCE_META)
-    except Exception as ex: pass
-
-    save_state(state)
-    print(f"готово: опубликовано {sent}")
-
-if __name__ == "__main__":
-    main()
