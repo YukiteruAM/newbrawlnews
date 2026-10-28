@@ -491,8 +491,8 @@ def generate_meta_image(rows, images):
                     b_img.thumbnail((140, 140))
                     bg.paste(b_img, (x_offset, y+20), b_img)
                     draw.text((x_offset+20, y+140), f"{pct(wr)}", font=font_pct, fill="white", stroke_width=2, stroke_fill="black")
+                    x_offset += 170  # ИСПРАВЛЕНО: сдвиг только внутри try
                 except: pass
-                x_offset += 170
 
         out = io.BytesIO()
         bg.convert("RGB").save(out, format="JPEG", quality=95)
@@ -769,13 +769,13 @@ def meta_analysis(agg, rows, prev, classes, deltas):
                 out.append(f"Из классов впереди «{CLASSES_RU[best]}» ({pct(good[best])}), позади «{CLASSES_RU[worst]}» ({pct(good[worst])}).")
     return out
 
-def build_meta_post(agg, prev=None, classes=None, min_picks=META_MIN_PICKS, limit=3900):
+def build_meta_post(agg, prev=None, classes=None, min_picks=META_MIN_PICKS, limit=1020):
     esc = html.escape
     rows = rank_rows(agg["stats"], min_picks)
     if len(rows) < 5: return ""
     total = agg["battles"] * 6
     head = ("📊 <b>МЕТА BRAWL STARS</b> · топ-игроки мира\n"
-            f"<i>{agg['battles']} боёв за последние сутки; рейтинг учитывает число боёв</i>")
+            f"<i>{agg['battles']} боёв за последние сутки</i>")
     top = ["🏆 <b>Сильнее всех</b>"] + [
         f"{i}. <b>{esc(n)}</b> — {pct(wr)} побед · пикрейт {pct(pk / total)}"
         for i, (n, pk, w, wr, lb) in enumerate(rows[:8], 1)]
@@ -802,14 +802,15 @@ def build_meta_post(agg, prev=None, classes=None, min_picks=META_MIN_PICKS, limi
         if len(mrows) >= 3: modes.append(f"• <b>{esc(mode_name(mode))}</b>: " + ", ".join(esc(r[0]) for r in mrows[:3]))
     analysis = meta_analysis(agg, rows, prev, classes, deltas)
     why = ["💡 <b>Разбор</b>"] + [f"• {esc(a)}" for a in analysis] if analysis else []
-    foot = ("<i>Это мета лучших игроков мира; на средних кубках расклад может отличаться. "
-            "Разница в 1–2 п.п. в пределах погрешности.</i>\n\n#BrawlStars #мета")
+    foot = ("<i>Это мета лучших игроков мира.</i>\n\n#BrawlStars #мета")
+    
+    # ИСПРАВЛЕНО: Выкидываем блоки, пока не влезет в лимит
     sections = [top, popular, movers, why, modes]
     while True:
         body = "\n\n".join("\n".join(sec) for sec in sections if sec)
         text = head + "\n\n" + body + "\n\n" + foot
         if len(text) <= limit or not sections: return text
-        sections.pop()
+        sections.pop() # Выкидываем "По режимам", потом "Разбор", потом "Падают" и т.д.
 
 def load_classes(state):
     c = state.get("classes") or {}
@@ -864,9 +865,6 @@ def maybe_post_meta(state, started, force=False):
         if now.hour < META_HOUR_UTC: 
             print("  [МЕТА] Еще рано (ждем 10:00 МСК)")
             return False
-        if time.time() - started > 330: 
-            print("  [МЕТА] Нет времени")
-            return False
             
     state["meta_try"] = time.time()
     try: 
@@ -889,7 +887,8 @@ def maybe_post_meta(state, started, force=False):
     prev = state.get("meta") or {}
     
     rows = rank_rows(agg["stats"], META_MIN_PICKS)
-    text = build_meta_post(agg, prev, classes)
+    # ИСПРАВЛЕНО: limit=1020 гарантирует, что текст влезет в подпись Телеграма
+    text = build_meta_post(agg, prev, classes, limit=1020)
     
     if not text: 
         print("  [МЕТА] Слишком мало бойцов в рейтинге для поста")
@@ -898,18 +897,17 @@ def maybe_post_meta(state, started, force=False):
     img_bytes = generate_meta_image(rows, images)
     
     if img_bytes:
-        short_text = build_meta_post(agg, prev, classes, limit=900)
         try:
-            tg_upload(img_bytes, short_text)
-            if len(text) > 1024:
-                tg_json("sendMessage", {"chat_id": CHAT, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True})
+            tg_upload(img_bytes, text)
             print("  [МЕТА] Успешно опубликована с картинкой!")
         except Exception as ex:
-            print(f"  [МЕТА] Ошибка отправки картинки: {ex}. Пробую текстом...")
-            tg_json("sendMessage", {"chat_id": CHAT, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True})
+            print(f"  [МЕТА] Ошибка отправки картинки: {ex}. Шлю текстом...")
+            try: tg_json("sendMessage", {"chat_id": CHAT, "text": text, "parse_mode": "HTML"})
+            except Exception as e: print(f"  [МЕТА] Текст тоже не ушел: {e}")
     else:
         print("  [МЕТА] Картинка не сгенерировалась, шлю текст.")
-        tg_json("sendMessage", {"chat_id": CHAT, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True})
+        try: tg_json("sendMessage", {"chat_id": CHAT, "text": text, "parse_mode": "HTML"})
+        except Exception as e: print(f"  [МЕТА] Текст не ушел: {e}")
         
     state["meta"] = {"date": today, "stats": agg["stats"], "battles": agg["battles"]}
     state["meta_posted"] = today
@@ -939,71 +937,4 @@ def main():
     
     state = load_state()
     seen = set(state["seen"])
-    fails = state["fails"]
-    today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
-    if state["daily"].get("date") != today:
-        state["daily"] = {"date": today, "regular": 0, "guides": 0}
-
-    def mark(item_id):
-        fails.pop(item_id, None)
-        if item_id not in seen:
-            seen.add(item_id)
-            state["seen"].append(item_id)
-
-    print("1. Начинаю собирать новости из источников...")
-    results = fetch_all(SOURCES, state)
-    queue = []
-    for src in SOURCES:
-        key = src["name"]
-        items = results.get(key)
-        if not items: continue
-        if key not in state["sources"]:
-            for it in items: mark(it["id"])
-            state["sources"].append(key)
-            continue
-        for it in items:
-            if it["id"] not in seen: queue.append((it, src["important"], key))
-
-    print(f"2. Найдено новых записей в очереди: {len(queue)}")
-    queue.sort(key=lambda x: not x[1])
-    
-    sent = 0
-    for it, important, key in queue:
-        if sent >= MAX_PER_RUN or time.time() - started > TIME_BUDGET: 
-            break
-        if not important and state["daily"]["regular"] >= DAILY_REGULAR_LIMIT:
-            mark(it["id"])
-            continue
-        
-        if key == "brawlify-guides" and state["daily"].get("guides", 0) >= 1 and not FORCE_META:
-            mark(it["id"])
-            continue
-
-        try:
-            phrase = pick_phrase(it)
-            send(it, important, phrase)
-            print(f"   -> Опубликовано: {it.get('title')}")
-        except Exception as ex:
-            print(f"   [ОШИБКА] Не удалось отправить {it.get('title')}: {ex}")
-            continue
-
-        mark(it["id"])
-        sent += 1
-        if key == "brawlify-guides":
-            state["daily"]["guides"] = state["daily"].get("guides", 0) + 1
-        elif not important:
-            state["daily"]["regular"] += 1
-        save_state(state)
-        time.sleep(PAUSE)
-
-    print("3. Проверяю, нужно ли постить мету...")
-    try: 
-        maybe_post_meta(state, started, force=FORCE_META)
-    except Exception as ex: 
-        print(f"  [ОШИБКА МЕТЫ] {ex}")
-
-    save_state(state)
-    print(f"4. Работа завершена. Всего постов: {sent}")
-
-if __name__ == "__main__":
-    main()
+    fails = 
