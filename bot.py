@@ -678,22 +678,22 @@ def meta_analysis(agg, rows, prev, classes, deltas):
         else: out.append(f"Самый популярный боец {pop[0]} ({pct(ppr)}) показывает средний результат: {pct(pop[3])} побед.")
     risers = [d for d in deltas if d[1] > 0][:1]
     fallers = [d for d in deltas if d[1] < 0][:1]
-        if risers: out.append(f"За сутки заметнее всех вырос {risers[0][0]}: {risers[0][1] * 100:+.1f} п.п. побед.".replace(".", ","))
-        if fallers: out.append(f"Сильнее всех просел {fallers[0][0]}: {fallers[0][1] * 100:+.1f} п.п. побед.".replace(".", ","))
-        if classes:
-            agg_cls = {}
-            for name, (pk, w) in agg["stats"].items():
-                c = classes.get(name.upper())
-                if c in CLASSES_RU:
-                    a = agg_cls.setdefault(c, [0, 0])
-                    a[0] += pk
-                    a[1] += w
-            good = {c: v[1] / v[0] for c, v in agg_cls.items() if v[0] >= 150}
-            if len(good) >= 3:
-                best, worst = max(good, key=good.get), min(good, key=good.get)
-                if good[best] - good[worst] >= 0.015:
-                    out.append(f"Из классов впереди «{CLASSES_RU[best]}» ({pct(good[best])}), позади «{CLASSES_RU[worst]}» ({pct(good[worst])}).")
-        return out
+    if risers: out.append(f"За сутки заметнее всех вырос {risers[0][0]}: {risers[0][1] * 100:+.1f} п.п. побед.".replace(".", ","))
+    if fallers: out.append(f"Сильнее всех просел {fallers[0][0]}: {fallers[0][1] * 100:+.1f} п.п. побед.".replace(".", ","))
+    if classes:
+        agg_cls = {}
+        for name, (pk, w) in agg["stats"].items():
+            c = classes.get(name.upper())
+            if c in CLASSES_RU:
+                a = agg_cls.setdefault(c, [0, 0])
+                a[0] += pk
+                a[1] += w
+        good = {c: v[1] / v[0] for c, v in agg_cls.items() if v[0] >= 150}
+        if len(good) >= 3:
+            best, worst = max(good, key=good.get), min(good, key=good.get)
+            if good[best] - good[worst] >= 0.015:
+                out.append(f"Из классов впереди «{CLASSES_RU[best]}» ({pct(good[best])}), позади «{CLASSES_RU[worst]}» ({pct(good[worst])}).")
+    return out
 
 def build_meta_post(agg, prev=None, classes=None, min_picks=META_MIN_PICKS, limit=1020):
     esc = html.escape
