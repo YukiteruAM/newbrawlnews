@@ -1,69 +1,46 @@
-"""Бот новостей Brawl Stars"""
 import os, sys, re, io, json, html, time, uuid, datetime, random, math
 import urllib.request, urllib.parse, urllib.error
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
 from html.parser import HTMLParser
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 TOKEN = os.environ.get("BOT_TOKEN", "")
 CHAT = os.environ.get("CHAT_ID", "")
+BS_KEY = os.environ.get("BRAWL_API_KEY", "")
+FORCE_META = os.environ.get("FORCE_META", "").strip().lower() in ("1", "true", "yes")
 
 MAX_PER_RUN = 3
 DAILY_REGULAR_LIMIT = 8
 PAUSE = 3
 TIME_BUDGET = 300
-MAX_FAILS = 36
-FILL_FAILS = 5
 STATE_FILE = "seen.json"
 SEEN_KEEP = 1000
-RECENT_KEEP = 200
-RECENT_DAYS = 10
-TITLE_DUP_DAYS = 3
-UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-      "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
 SOURCES = [
-    {"name": "supercell-blog", "type": "supercell", "kind": "blog",
-     "url": "https://supercell.com/en/games/brawlstars/blog/", "important": True},
-    {"name": "supercell-announcements", "type": "supercell", "kind": "announcement",
-     "url": "https://supercell.com/en/news/announcement/brawlstars/", "important": True},
+    {"name": "supercell-blog", "type": "supercell", "kind": "blog", "url": "https://supercell.com/en/games/brawlstars/blog/", "important": True},
+    {"name": "supercell-announcements", "type": "supercell", "kind": "announcement", "url": "https://supercell.com/en/news/announcement/brawlstars/", "important": True},
     {"name": "appstore-update", "type": "appstore", "app_id": "1229016807", "important": True},
-    {"name": "yt-brawlstars", "type": "youtube", "handle": "BrawlStars", "important": True,
-     "expect": "brawl stars", "reject": "esports"},
-    {"name": "yt-esports", "type": "youtube", "handle": "brawlstarsesports", "important": False,
-     "link": True, "expect": "esports"},
-    {"name": "reddit-official", "type": "feed", "important": True,
-     "url": "https://www.reddit.com/r/Brawlstars/search.rss?q=flair%3A%22Supercell+Official%22&restrict_sr=on&sort=new"},
-    {"name": "reddit-top", "type": "feed", "important": False,
-     "url": "https://www.reddit.com/r/BrawlStars/top/.rss?t=day"},
-    {"name": "reddit-leaks", "type": "feed", "important": False,
-     "url": "https://www.reddit.com/r/BrawlStars/search.rss?q=title%3Aleak&restrict_sr=on&sort=new&t=week"},
+    {"name": "yt-brawlstars", "type": "youtube", "handle": "BrawlStars", "important": True, "expect": "brawl stars", "reject": "esports"},
+    {"name": "yt-esports", "type": "youtube", "handle": "brawlstarsesports", "important": False, "link": True, "expect": "esports"},
+    {"name": "reddit-official", "type": "feed", "important": True, "url": "https://www.reddit.com/r/Brawlstars/search.rss?q=flair%3A%22Supercell+Official%22&restrict_sr=on&sort=new"},
+    {"name": "reddit-top", "type": "feed", "important": False, "url": "https://www.reddit.com/r/BrawlStars/top/.rss?t=day"},
+    {"name": "reddit-leaks", "type": "feed", "important": False, "url": "https://www.reddit.com/r/BrawlStars/search.rss?q=title%3Aleak&restrict_sr=on&sort=new&t=week"},
     {"name": "brawlify-guides", "type": "guide", "important": False},
 ]
 
-KEEP = ["Brawl Stars", "Brawl Pass", "Brawl Talk", "Starr Drop", "Supercell Make", "Supercell ID",
-        "Supercell Store", "Supercell", "Clash Royale", "Clash of Clans", "Hay Day", "Boom Beach"]
-
+KEEP = ["Brawl Stars", "Brawl Pass", "Brawl Talk", "Starr Drop", "Supercell Make", "Supercell ID", "Supercell Store", "Supercell", "Clash Royale", "Clash of Clans", "Hay Day", "Boom Beach"]
 def _keep_pattern(k): return re.escape(k).replace(r"\ ", r"\s?") + "s?"
 KEEP_RE = re.compile(r"\b(" + "|".join(_keep_pattern(k) for k in sorted(KEEP, key=len, reverse=True)) + r")\b", re.I)
 
 BRAWLERS = [
-    "Shelly", "Colt", "Bull", "Brock", "El Primo", "Barley", "Poco", "Rosa", "Jessie", "Dynamike", "Tick",
-    "8-Bit", "Rico", "Darryl", "Penny", "Carl", "Jacky", "Gus", "Bo", "Emz", "EMZ", "Stu", "Piper", "Pam",
-    "Frank", "Bibi", "BiBi", "Bea", "Nani", "Edgar", "Griff", "Grom", "Bonnie", "Gale", "Colette", "Belle",
-    "Ash", "Lola", "Sam", "Mandy", "Maisie", "Hank", "Pearl", "Larry & Lawrie", "Angelo", "Berry", "Shade",
-    "Spike", "Crow", "Leon", "Sandy", "Amber", "Meg", "Surge", "Chester", "Cordelius", "Kit", "Draco",
-    "Kenji", "Mico", "Mortis", "Tara", "Gene", "Max", "Mr. P", "Sprout", "Byron", "Squeak", "Lou", "Ruffs",
-    "Buzz", "Fang", "Eve", "Janet", "Otis", "Buster", "Gray", "R-T", "Willow", "Doug", "Chuck", "Charlie",
-    "Melodie", "Lily", "Clancy", "Moe", "Juju", "Ollie", "Lumi", "Finx", "Jae-Yong", "Kaze", "Alli", "Trunk",
-    "Mina", "Ziggy", "Gigi", "Glowy", "Najia", "Damian", "Starr Nova", "Bolt", "Sirius", "Pierce", "Meeple",
+    "Shelly", "Colt", "Bull", "Brock", "El Primo", "Barley", "Poco", "Rosa", "Jessie", "Dynamike", "Tick", "8-Bit", "Rico", "Darryl", "Penny", "Carl", "Jacky", "Gus", "Bo", "Emz", "EMZ", "Stu", "Piper", "Pam", "Frank", "Bibi", "BiBi", "Bea", "Nani", "Edgar", "Griff", "Grom", "Bonnie", "Gale", "Colette", "Belle", "Ash", "Lola", "Sam", "Mandy", "Maisie", "Hank", "Pearl", "Larry & Lawrie", "Angelo", "Berry", "Shade", "Spike", "Crow", "Leon", "Sandy", "Amber", "Meg", "Surge", "Chester", "Cordelius", "Kit", "Draco", "Kenji", "Mico", "Mortis", "Tara", "Gene", "Max", "Mr. P", "Sprout", "Byron", "Squeak", "Lou", "Ruffs", "Buzz", "Fang", "Eve", "Janet", "Otis", "Buster", "Gray", "R-T", "Willow", "Doug", "Chuck", "Charlie", "Melodie", "Lily", "Clancy", "Moe", "Juju", "Ollie", "Lumi", "Finx", "Jae-Yong", "Kaze", "Alli", "Trunk", "Mina", "Ziggy", "Gigi", "Glowy", "Najia", "Damian", "Starr Nova", "Bolt", "Sirius", "Pierce", "Meeple",
 ]
 
 def _names_regex(names):
     alt = "|".join(re.escape(n) for n in sorted(set(names), key=len, reverse=True))
     return re.compile(r"(?<![\w-])(" + alt + r")(?![\w-])", re.I)
-
 NAMES_RE = _names_regex(BRAWLERS)
 QUOTED_RE = re.compile(r'"[^"\n]{2,40}"|“[^”\n]{2,40}”|«[^»\n]{2,40}»')
 
@@ -79,14 +56,9 @@ def register_names(names):
         BRAWLERS.extend(fresh)
         NAMES_RE = _names_regex(BRAWLERS)
 
-SCAM_RE = re.compile(
-    r"\b(?:free|unlimited)\s+(?:gems?|coins?|brawl pass|skins?)\b|\bgems?\s+(?:generator|hack|glitch|codes?)\b"
-    r"|\b(?:hack|hacks|cheats?)\b|\bgenerator\b|\bpromo ?codes?\b|\bgift ?cards?\b|\bgiveaway", re.I)
-
-ATOM = "{http://www.w3.org/2005/Atom}"
-MEDIA = "{http://search.yahoo.com/mrss/}"
+SCAM_RE = re.compile(r"\b(?:free|unlimited)\s+(?:gems?|coins?|brawl pass|skins?)\b|\bgems?\s+(?:generator|hack|glitch|codes?)\b|\b(?:hack|hacks|cheats?)\b|\bgenerator\b|\bpromo ?codes?\b|\bgift ?cards?\b|\bgiveaway", re.I)
+ATOM, MEDIA = "{http://www.w3.org/2005/Atom}", "{http://search.yahoo.com/mrss/}"
 CYR = re.compile("[а-яА-ЯёЁ]")
-
 class FatalError(Exception): pass
 class SkipItem(Exception): pass
 
@@ -130,14 +102,12 @@ def mostly_russian(s):
 
 def _gtx(masked):
     url = ("https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=ru&dt=t&q=" + urllib.parse.quote(masked))
-    data = json.loads(get(url))
-    return "".join(p[0] for p in data[0]).strip()
+    return "".join(p[0] for p in json.loads(get(url))[0]).strip()
 
 def _mymemory(masked):
-    if len(masked.encode()) > 450: raise ValueError("слишком длинно")
+    if len(masked.encode()) > 450: raise ValueError("длинно")
     url = ("https://api.mymemory.translated.net/get?langpair=en|ru&q=" + urllib.parse.quote(masked))
-    data = json.loads(get(url))
-    return html.unescape(data["responseData"]["translatedText"]).strip()
+    return html.unescape(json.loads(get(url))["responseData"]["translatedText"]).strip()
 
 ENGINES = [_gtx, _mymemory]
 
@@ -149,8 +119,7 @@ def _validate(masked, kept, result):
     if len(words) >= 4 and cyr < 0.5 * (cyr + lat): raise ValueError("перевод не удался")
     pattern = re.compile(r"ZZ\s*(\d+)\s*ZZ", re.I)
     found = pattern.findall(result)
-    if len(found) != len(kept) or any(int(i) >= len(kept) for i in found):
-        raise ValueError("ключевые слова потерялись")
+    if len(found) != len(kept) or any(int(i) >= len(kept) for i in found): raise ValueError("потерялись слова")
     return pattern.sub(lambda m: kept[int(m.group(1))], result)
 
 _BOEC = {"": "боец", "а": "бойца", "у": "бойцу", "ом": "бойцом", "е": "бойце", "ы": "бойцы", "ов": "бойцов", "ам": "бойцам", "ами": "бойцами", "ах": "бойцах"}
@@ -182,9 +151,8 @@ def translate(text, mask_quotes=False):
         try: return fix_ru(_validate(masked, kept, engine(masked)))
         except Exception as ex: last = ex
     raise ValueError(f"перевод не получился: {last}")
-
-GENERIC = set("""the and for with from this that your you are has have now out get into will its all more here how what when why about was were can our their just new update updates video videos official brawler brawlers skin skins game games""".split())
-MONTHS = set("""january february march april may june july august september october november december jan feb mar apr jun jul aug sep sept oct nov dec""".split())
+GENERIC = set("the and for with from this that your you are has have now out get into will its all more here how what when why about was were can our their just new update updates video videos official brawler brawlers skin skins game games".split())
+MONTHS = set("january february march april may june july august september october november december jan feb mar apr jun jul aug sep sept oct nov dec".split())
 
 def canon(url):
     try: u = urllib.parse.urlparse(url.strip())
@@ -222,11 +190,7 @@ SHORT_STOP = set("an of in on to is it as at by or vs x".split())
 
 def tokens_of(title):
     t = KEEP_RE.sub(" ", (title or "").lower())
-    out = set()
-    for w in re.findall(r"[a-z0-9]+", t):
-        if w in GENERIC or w in SHORT_STOP: continue
-        out.add(w[:-1] if w.endswith("s") and len(w) > 4 else w)
-    return out
+    return {w[:-1] if w.endswith("s") and len(w) > 4 else w for w in re.findall(r"[a-z0-9]+", t) if w not in GENERIC and w not in SHORT_STOP}
 
 def _marks(tokens): return {w for w in tokens if w.isdigit() or w in MONTHS or len(w) <= 2}
 
@@ -236,12 +200,13 @@ def is_dup(keys, toks, important, recent, now=None):
         if important and not r.get("imp"): continue
         if keys & set(r["k"]): return True
         rt = set(r["t"])
-        if not (toks and rt) or now - r.get("ts", 0) > TITLE_DUP_DAYS * 86400: continue
+        if not (toks and rt) or now - r.get("ts", 0) > 3 * 86400: continue
         ma, mb = _marks(toks), _marks(rt)
         if ma and mb and ma != mb: continue
         common = len(toks & rt)
         if (common >= 3 and common / min(len(toks), len(rt)) >= 0.6) or (len(toks) >= 2 and toks == rt): return True
     return False
+
 def ctext(e, *tags):
     for tag in tags:
         n = e.find(tag)
@@ -252,47 +217,41 @@ def pick_image(e, body):
     body = html.unescape(body or "")
     m = re.search(r'https://i\.redd\.it/[^"\s<>]+\.(?:jpe?g|png|webp)', body, re.I)
     if m: return m.group(0)
-    imgs = re.findall(r'<img[^>]+src="([^"]+)"', body)
-    for img in imgs:
-        if any(ext in img.lower() for ext in ['.jpg', '.jpeg', '.png', '.webp']):
-            if not any(bad in img.lower() for bad in ['icon', 'avatar', 'thumb', 'emoji']):
-                return html.unescape(img)
+    for img in re.findall(r'<img[^>]+src="([^"]+)"', body):
+        if any(ext in img.lower() for ext in ['.jpg', '.jpeg', '.png', '.webp']) and not any(bad in img.lower() for bad in ['icon', 'avatar', 'thumb', 'emoji']):
+            return html.unescape(img)
     for enc in e.findall("enclosure"):
         if (enc.get("type") or "").startswith("image") and enc.get("url"): return enc.get("url")
     t = e.find(".//" + MEDIA + "thumbnail")
     if t is not None and t.get("url"): return html.unescape(t.get("url"))
+    for mc in e.findall(MEDIA + "content"):
+        if mc.get("url") and mc.get("type", "").startswith("image"): return html.unescape(mc.get("url"))
     return ""
 
 def parse_feed(xml_bytes):
     root = ET.fromstring(xml_bytes)
-    entries = root.findall(ATOM + "entry") or list(root.iter("item"))
     items = []
-    for e in entries:
+    for e in (root.findall(ATOM + "entry") or list(root.iter("item"))):
         link = ""
         for l in e.findall(ATOM + "link"):
-            if l.get("rel", "alternate") == "alternate" and l.get("href"):
-                link = l.get("href"); break
+            if l.get("rel", "alternate") == "alternate" and l.get("href"): link = l.get("href"); break
         if not link: link = ctext(e, "link")
         body = ctext(e, ATOM + "content", ATOM + "summary", "description")
         if not body:
             d = e.find(".//" + MEDIA + "description")
             body = d.text if d is not None and d.text else ""
-        item_id = ctext(e, ATOM + "id", "guid", "id") or link
-        title = clean(ctext(e, ATOM + "title", "title"))
+        item_id, title = ctext(e, ATOM + "id", "guid", "id") or link, clean(ctext(e, ATOM + "title", "title"))
         if not title or not item_id: continue
-        urls = re.findall(r'https?://[^\s"<>)\]]+', html.unescape(body))
-        items.append({"id": item_id, "title": title, "link": link, "text": shorten(clean(body)), "img": pick_image(e, body), "urls": urls})
+        items.append({"id": item_id, "title": title, "link": link, "text": shorten(clean(body)), "img": pick_image(e, body), "urls": re.findall(r'https?://[^\s"<>)\]]+', html.unescape(body))})
     return items
 
 def metas(page):
     out = {}
     for tag in re.findall(r"<meta\b[^>]*>", page, re.I):
         attrs = {}
-        for k, a, b in re.findall(r"([\w:-]+)\s*=\s*(?:\"([^\"]*)\"|'([^']*)')", tag):
-            attrs[k.lower()] = a or b
+        for k, a, b in re.findall(r"([\w:-]+)\s*=\s*(?:\"([^\"]*)\"|'([^']*)')", tag): attrs[k.lower()] = a or b
         key = attrs.get("property") or attrs.get("name")
-        if key and "content" in attrs and key.lower() not in out:
-            out[key.lower()] = html.unescape(attrs["content"]).strip()
+        if key and "content" in attrs and key.lower() not in out: out[key.lower()] = html.unescape(attrs["content"]).strip()
     return out
 
 _END = r"""(?=[/"'\\?#<\s,)])"""
@@ -309,8 +268,7 @@ def fetch_supercell(src, state):
     for m in re.finditer(pat, page):
         if any(seg in skip for seg in m.groups()[1:]): continue
         path = m.group(1)
-        url = path if path.startswith("http") else "https://supercell.com" + path
-        url = url.rstrip("/") + "/"
+        url = (path if path.startswith("http") else "https://supercell.com" + path).rstrip("/") + "/"
         if url not in links: links.append(url)
     return [{"id": u, "link": u, "lazy": True, "kind": kind} for u in links[:12]]
 
@@ -320,241 +278,192 @@ def fill_supercell(item):
     title = re.sub(r"\s*[×|\-–—]\s*Supercell\s*$", "", m.get("og:title", ""))
     if not title: raise ValueError("нет заголовка")
     desc = m.get("og:description") or m.get("description", "")
-    if item.get("kind") == "announcement" and not re.search(r"brawl", f"{title} {desc} {item['link']}", re.I):
-        raise SkipItem("не про Brawl Stars")
+    if item.get("kind") == "announcement" and not re.search(r"brawl", f"{title} {desc} {item['link']}", re.I): raise SkipItem("не Brawl")
     img = m.get("og:image", "")
-    item["title"] = title
-    item["text"] = shorten(clean(desc))
-    item["img"] = "" if "og_default" in img else img
-    item["urls"] = re.findall(r"https?://(?:www\.)?(?:youtube\.com/watch\?v=|youtu\.be/)[\w-]{11}", page)
-    if item.get("kind") == "blog" and re.search(r"release notes|balance|maintenance|patch", f"{title} {desc}", re.I):
-        item["_page"] = page
-    item["lazy"] = False
+    item.update({"title": title, "text": shorten(clean(desc)), "img": "" if "og_default" in img else img, "urls": re.findall(r"https?://(?:www\.)?(?:youtube\.com/watch\?v=|youtu\.be/)[\w-]{11}", page), "lazy": False})
+    if item.get("kind") == "blog" and re.search(r"release notes|balance|maintenance|patch", f"{title} {desc}", re.I): item["_page"] = page
 
 def fetch_appstore(src, state):
-    data = json.loads(get(f"https://itunes.apple.com/lookup?id={src['app_id']}&country=us"))
-    r = data["results"][0]
-    ver = r["version"]
-    return [{
-        "id": f"appstore:{ver}", "title": f"Вышло обновление Brawl Stars: версия {ver}",
-        "title_ru": True, "topic": ("🛠", "Вышло обновление", "обновление"),
-        "link": r.get("trackViewUrl", ""), "text": shorten(clean(r.get("releaseNotes", ""))),
-        "img": r.get("artworkUrl512", ""),
-    }]
+    r = json.loads(get(f"https://itunes.apple.com/lookup?id={src['app_id']}&country=us"))["results"][0]
+    return [{"id": f"appstore:{r['version']}", "title": f"Обновление Brawl Stars: {r['version']}", "title_ru": True, "topic": ("🛠", "Обновление", "обновление"), "link": r.get("trackViewUrl", ""), "text": shorten(clean(r.get("releaseNotes", ""))), "img": r.get("artworkUrl512", "")}]
 
 def yt_channel_id(handle, state):
     cache = state.setdefault("yt", {})
     if handle in cache: return cache[handle]
     page = get(f"https://www.youtube.com/@{handle}", {"Cookie": "CONSENT=YES+1; SOCS=CAI"}).decode("utf-8", "replace")
-    pats = (r'<link rel="canonical" href="https://www\.youtube\.com/channel/(UC[\w-]{22})"', r'"externalId":"(UC[\w-]{22})"', r'"channelId":"(UC[\w-]{22})"')
-    for pat in pats:
+    for pat in (r'<link rel="canonical" href="https://www\.youtube\.com/channel/(UC[\w-]{22})"', r'"externalId":"(UC[\w-]{22})"', r'"channelId":"(UC[\w-]{22})"'):
         m = re.search(pat, page)
         if m: cache[handle] = m.group(1); return m.group(1)
-    raise ValueError(f"не нашёл channel_id для @{handle}")
+    raise ValueError(f"нет channel_id @{handle}")
 
 def fetch_youtube(src, state):
-    cid = yt_channel_id(src["handle"], state)
-    xml = get("https://www.youtube.com/feeds/videos.xml?channel_id=" + cid)
-    name = (ET.fromstring(xml).findtext(ATOM + "title") or "").strip()
-    low = name.lower()
-    if (src.get("expect") and src["expect"] not in low) or (src.get("reject") and src["reject"] in low):
+    xml = get("https://www.youtube.com/feeds/videos.xml?channel_id=" + yt_channel_id(src["handle"], state))
+    name = (ET.fromstring(xml).findtext(ATOM + "title") or "").strip().lower()
+    if (src.get("expect") and src["expect"] not in name) or (src.get("reject") and src["reject"] in name):
         state.get("yt", {}).pop(src["handle"], None)
-        raise ValueError(f"канал @{src['handle']} называется «{name}», это не тот канал")
+        raise ValueError(f"не тот канал @{src['handle']}")
     return parse_feed(xml)
-
 def get_base_image():
     W, H = 1080, 1080
-    base = Image.new('RGB', (W, H), "#2d0059")
-    top = Image.new('RGB', (W, H), "#004d99")
-    mask = Image.new('L', (W, H))
-    mask_data = []
-    for y in range(H):
-        for x in range(W):
-            mask_data.append(int(255 * (x / W + y / H) / 2))
-    mask.putdata(mask_data)
-    bg = Image.composite(top, base, mask).convert("RGBA")
-    
+    BACKGROUNDS = [
+        "https://cdn.brawlify.com/backgrounds/regular/0.jpg",
+        "https://cdn.brawlify.com/backgrounds/regular/1.jpg",
+        "https://cdn.brawlify.com/backgrounds/regular/2.jpg",
+        "https://cdn.brawlify.com/backgrounds/regular/3.jpg"
+    ]
+    bg = None
+    try:
+        bg = Image.open(io.BytesIO(download(random.choice(BACKGROUNDS)))).convert("RGBA")
+        bg = bg.resize((W, H), Image.Resampling.LANCZOS)
+    except Exception:
+        bg = Image.new('RGBA', (W, H), (20, 10, 40, 255))
+        
+    overlay = Image.new('RGBA', (W, H), (10, 5, 20, 200)) # Сильное затемнение
+    bg = Image.alpha_composite(bg, overlay)
+
     if os.path.exists("logo.png"):
         try:
             logo = Image.open("logo.png").convert("RGBA")
             min_dim = min(logo.size)
-            logo = logo.crop(((logo.width - min_dim)/2, (logo.height - min_dim)/2, (logo.width + min_dim)/2, (logo.height + min_dim)/2))
-            logo = logo.resize((140, 140), Image.Resampling.LANCZOS)
+            logo = logo.crop(((logo.width - min_dim)/2, (logo.height - min_dim)/2, (logo.width + min_dim)/2, (logo.height + min_dim)/2)).resize((140, 140), Image.Resampling.LANCZOS)
             mask = Image.new("L", (140, 140), 0)
             ImageDraw.Draw(mask).ellipse((0, 0, 140, 140), fill=255)
             circle_logo = Image.new("RGBA", (140, 140), (0, 0, 0, 0))
             circle_logo.paste(logo, (0, 0), mask)
             draw = ImageDraw.Draw(bg)
-            draw.ellipse([(58, 38), (202, 182)], outline="#ffcc00", width=5)
+            draw.ellipse([(58, 38), (202, 182)], outline="#ffcc00", width=6)
             bg.paste(circle_logo, (60, 40), circle_logo)
-        except Exception as e: pass
+        except Exception: pass
             
     font_path = "LilitaOne-Regular.ttf"
     if not os.path.exists(font_path):
         try:
-            font_url = "https://github.com/google/fonts/raw/main/ofl/lilitaone/LilitaOne-Regular.ttf"
-            with open(font_path, "wb") as f: f.write(download(font_url))
-        except Exception as e: pass
-        
-    try: font_channel = ImageFont.truetype(font_path, 55)
+            with open(font_path, "wb") as f: f.write(download("https://github.com/google/fonts/raw/main/ofl/lilitaone/LilitaOne-Regular.ttf"))
+        except Exception: pass
+    try: font_channel = ImageFont.truetype(font_path, 65)
     except: font_channel = ImageFont.load_default()
-    
     draw = ImageDraw.Draw(bg)
-    draw.text((230, 70), "NEW BRAWL NEWS", font=font_channel, fill="white", stroke_width=3, stroke_fill="black")
+    draw.text((230, 70), "NEW BRAWL NEWS", font=font_channel, fill="white", stroke_width=4, stroke_fill="black")
     return bg
 
 def generate_guide_image(b, gadget_name, sp_name):
     try:
         bg = get_base_image()
-        draw = ImageDraw.Draw(bg)
-        
-        # Скачиваем шрифт с поддержкой кириллицы (Roboto), если его нет
         font_ru_path = "Roboto-Bold.ttf"
         if not os.path.exists(font_ru_path):
             try:
-                font_url = "https://github.com/google/fonts/raw/main/apache/roboto/Roboto-Bold.ttf"
-                with open(font_ru_path, "wb") as f: f.write(download(font_url))
+                with open(font_ru_path, "wb") as f: f.write(download("https://github.com/google/fonts/raw/main/apache/roboto/Roboto-Bold.ttf"))
             except Exception: pass
-
-        font_path = "LilitaOne-Regular.ttf"
         try:
-            font_name = ImageFont.truetype(font_path, 120) # Для ника (Английский)
-            font_ru_big = ImageFont.truetype(font_ru_path, 40) # Для русского
-            font_ru_small = ImageFont.truetype(font_ru_path, 30)
-        except:
-            font_name = font_ru_big = font_ru_small = ImageFont.load_default()
+            font_name = ImageFont.truetype("LilitaOne-Regular.ttf", 150)
+            font_ru_big = ImageFont.truetype(font_ru_path, 70)
+            font_ru_med = ImageFont.truetype(font_ru_path, 50)
+        except: font_name = font_ru_big = font_ru_med = ImageFont.load_default()
 
-        # Текст слева
-        draw.text((60, 230), "ГАЙД НА БОЙЦА", font=font_ru_big, fill="#ffcc00", stroke_width=2, stroke_fill="black")
-        draw.text((60, 280), b['name'].upper(), font=font_name, fill="white", stroke_width=5, stroke_fill="black")
-        
+        draw = ImageDraw.Draw(bg)
+        draw.text((60, 220), "ГАЙД НА БОЙЦА", font=font_ru_big, fill="#ffcc00", stroke_width=4, stroke_fill="black")
+        draw.text((60, 310), b['name'].upper(), font=font_name, fill="white", stroke_width=8, stroke_fill="black")
         role = (b.get("class") or {}).get("name", "Боец")
-        draw.text((65, 420), f"Класс: {role}", font=font_ru_big, fill="#ffcc00", stroke_width=2, stroke_fill="black")
+        draw.text((65, 490), f"Класс: {role}", font=font_ru_big, fill="#aaddff", stroke_width=3, stroke_fill="black")
 
-        # Картинка бойца (справа, большая)
-        img_url = b.get("imageUrl")
-        if img_url:
+        # Огромный 3D-рендер
+        if b.get('id'):
             try:
-                b_img = Image.open(io.BytesIO(download(img_url))).convert("RGBA")
-                b_img.thumbnail((700, 700)) # Огромный размер
-                bg.paste(b_img, (450, 300), b_img) # Сдвинули вправо и вниз
+                b_img = Image.open(io.BytesIO(download(f"https://cdn.brawlify.com/brawlers/borderless/{b['id']}.png"))).convert("RGBA")
+                b_img.thumbnail((750, 750), Image.Resampling.LANCZOS)
+                bg.paste(b_img, (350, 250), b_img)
             except Exception: pass
 
-        # Плашка для билдов внизу
-        draw.rounded_rectangle([(50, 720), (1030, 1030)], radius=20, fill=(0, 0, 0, 100))
-        draw.text((70, 740), "РЕКОМЕНДУЕМЫЙ БИЛД", font=font_ru_big, fill="#ffcc00", stroke_width=2, stroke_fill="black")
+        # Стеклянная плашка
+        glass = Image.new('RGBA', (1080, 1080), (0, 0, 0, 0))
+        g_draw = ImageDraw.Draw(glass)
+        g_draw.rounded_rectangle([(60, 720), (1020, 1030)], radius=30, fill=(255, 255, 255, 30), outline="#ffcc00", width=6)
+        bg = Image.alpha_composite(bg, glass)
         
-        # Рамки для иконок
-        draw.rounded_rectangle([(70, 810), (190, 930)], radius=15, outline="#ffcc00", width=5)
-        draw.rounded_rectangle([(70, 950), (190, 1070)], radius=15, outline="#ffcc00", width=5)
-        
+        draw = ImageDraw.Draw(bg)
+        draw.text((90, 750), "РЕКОМЕНДУЕМЫЙ БИЛД", font=font_ru_big, fill="#ffcc00", stroke_width=3, stroke_fill="black")
+        draw.rounded_rectangle([(90, 840), (230, 980)], radius=15, outline="#ffcc00", width=6)
+        draw.rounded_rectangle([(340, 840), (480, 980)], radius=15, outline="#ffcc00", width=6)
+
         if b.get("gadgets"):
             try:
-                g_url = b['gadgets'][0].get('imageUrl')
-                if g_url:
-                    g_img = Image.open(io.BytesIO(download(g_url))).convert("RGBA")
-                    g_img.thumbnail((100, 100))
-                    bg.paste(g_img, (80, 820), g_img)
+                g_img = Image.open(io.BytesIO(download(b['gadgets'][0].get('imageUrl')))).convert("RGBA")
+                g_img.thumbnail((120, 120), Image.Resampling.LANCZOS)
+                bg.paste(g_img, (100, 850), g_img)
             except Exception: pass
         if b.get("starPowers"):
             try:
-                sp_url = b['starPowers'][0].get('imageUrl')
-                if sp_url:
-                    s_img = Image.open(io.BytesIO(download(sp_url))).convert("RGBA")
-                    s_img.thumbnail((100, 100))
-                    bg.paste(s_img, (80, 960), s_img)
+                s_img = Image.open(io.BytesIO(download(b['starPowers'][0].get('imageUrl')))).convert("RGBA")
+                s_img.thumbnail((120, 120), Image.Resampling.LANCZOS)
+                bg.paste(s_img, (350, 850), s_img)
             except Exception: pass
 
-        # Текст возле иконок
-        draw.text((220, 850), gadget_name, font=font_ru_big, fill="white", stroke_width=2, stroke_fill="black")
-        draw.text((220, 990), sp_name, font=font_ru_big, fill="white", stroke_width=2, stroke_fill="black")
+        draw.text((90, 990), "Гаджет", font=font_ru_med, fill="#aaddff", stroke_width=2, stroke_fill="black")
+        draw.text((340, 990), "Зв. Сила", font=font_ru_med, fill="#aaddff", stroke_width=2, stroke_fill="black")
+        draw.text((100, 700), gadget_name, font=font_ru_med, fill="white", stroke_width=2, stroke_fill="black")
+        draw.text((350, 700), sp_name, font=font_ru_med, fill="white", stroke_width=2, stroke_fill="black")
 
         out = io.BytesIO()
         bg.convert("RGB").save(out, format="JPEG", quality=95)
         return out.getvalue()
-    except Exception as e:
-        print("Ошибка генерации гайда:", e)
-        return b""
+    except Exception: return b""
 
 def generate_meta_image(rows, images):
     try:
         bg = get_base_image()
-        draw = ImageDraw.Draw(bg)
-        
-        font_path = "LilitaOne-Regular.ttf"
         try:
-            font_title = ImageFont.truetype(font_path, 70)
-            font_tier = ImageFont.truetype(font_path, 80)
-            font_pct = ImageFont.truetype(font_path, 35)
-        except:
-            font_title = font_tier = font_pct = ImageFont.load_default()
-
+            font_title = ImageFont.truetype("LilitaOne-Regular.ttf", 70)
+            font_tier = ImageFont.truetype("LilitaOne-Regular.ttf", 80)
+            font_pct = ImageFont.truetype("LilitaOne-Regular.ttf", 35)
+        except: font_title = font_tier = font_pct = ImageFont.load_default()
+        draw = ImageDraw.Draw(bg)
         draw.text((250, 160), "МЕТА BRAWL STARS", font=font_title, fill="#ffcc00", stroke_width=3, stroke_fill="black")
-
-        tiers = [(280, "S", "#cc0044", rows[:4]), (480, "A", "#cc6600", rows[4:8]), (680, "B", "#ccaa00", rows[8:12])]
         
-        for y, letter, color, brawlers in tiers:
+        for y, letter, color, brawlers in [(280, "S", "#cc0044", rows[:4]), (480, "A", "#cc6600", rows[4:8]), (680, "B", "#ccaa00", rows[8:12])]:
             draw.rounded_rectangle([(60, y), (1020, y+180)], radius=20, fill=color)
             draw.text((90, y+30), letter, font=font_tier, fill="white", stroke_width=4, stroke_fill="black")
-            
             x_offset = 260
             for n, pk, w, wr, lb in brawlers:
-                img_url = images.get(n.upper(), "")
-                if not img_url: continue
+                if not images.get(n.upper()): continue
                 try:
-                    b_img = Image.open(io.BytesIO(download(img_url))).convert("RGBA")
-                    b_img.thumbnail((140, 140))
-                    bg.paste(b_img, (x_offset, y+20), b_img)
+                    b_img = Image.open(io.BytesIO(download(images[n.upper()]))).convert("RGBA")
+                    b_img.thumbnail((140, 140)); bg.paste(b_img, (x_offset, y+20), b_img)
                     draw.text((x_offset+20, y+140), f"{pct(wr)}", font=font_pct, fill="white", stroke_width=2, stroke_fill="black")
-                    x_offset += 170  # ИСПРАВЛЕНО: сдвиг только внутри try
-                except: pass
+                    x_offset += 170
+                except Exception: pass
+        out = io.BytesIO(); bg.convert("RGB").save(out, format="JPEG", quality=95); return out.getvalue()
+    except Exception: return b""
 
-        out = io.BytesIO()
-        bg.convert("RGB").save(out, format="JPEG", quality=95)
-        return out.getvalue()
-    except Exception as e:
-        return b""
+def ensure_image(item, state):
+    if item.get("img") or item.get("img_bytes"): return True
+    m = NAMES_RE.search(item.get("title", ""))
+    if m:
+        classes, images = load_classes(state)
+        img_url = images.get(nice_name(m.group(1)).upper())
+        if img_url: item["img"] = img_url; return True
+    item["img"] = "https://cdn.brawlify.com/backgrounds/regular/0.jpg"
+    return True
+
 def fetch_guide(src, state):
     try:
-        if state.get("daily", {}).get("guides", 0) >= 1:
-            return [] 
-            
-        data = json.loads(get("https://api.brawlapi.com/v1/brawlers"))
-        brawlers = data.get("list", [])
+        if state.get("daily", {}).get("guides", 0) >= 1: return []
+        brawlers = json.loads(get("https://api.brawlapi.com/v1/brawlers")).get("list", [])
         if not brawlers: return []
-        
         posted = state.get("posted_guides", [])
-        available = [b for b in brawlers if b["name"] not in posted]
-        if not available:
-            state["posted_guides"] = []
-            available = brawlers
-            
+        available = [b for b in brawlers if b["name"] not in posted] or brawlers
+        if not posted or not available: state["posted_guides"] = []
         b = random.choice(available)
         state.setdefault("posted_guides", []).append(b["name"])
-        
         g_name = b["gadgets"][0]["name"] if b.get("gadgets") else "Нет данных"
         s_name = b["starPowers"][0]["name"] if b.get("starPowers") else "Нет данных"
-        
-        img_bytes = generate_guide_image(b, g_name, s_name)
-        
-        text = (
-            f"🛠 Гаджет: {g_name}\n"
-            f"⭐ Звездная сила: {s_name}\n\n"
-            f"💡 Совет: Играйте на своей дистанции, следите за картой и не стесняйтесь отступать для восстановления ХП."
-        )
-        
         return [{
-            "id": f"guide:{b['name']}:{int(time.time()/86400)}",
-            "title": f"Гайд на бойца: {b['name']}",
-            "text": text,
-            "img_bytes": img_bytes,
-            "link": f"https://brawlify.com/stats/brawlers/{b['id']}",
-            "force_link": True,
-            "topic": ("📚", "Гайд", "гайд"),
+            "id": f"guide:{b['name']}:{int(time.time()/86400)}", "title": f"Гайд на бойца: {b['name']}",
+            "text": f"🛠 Гаджет: {g_name}\n⭐ Звездная сила: {s_name}\n\n💡 Совет: Играйте на своей дистанции, следите за картой и не стесняйтесь отступать для восстановления ХП.",
+            "img_bytes": generate_guide_image(b, g_name, s_name), "link": f"https://brawlify.com/stats/brawlers/{b['id']}",
+            "force_link": True, "topic": ("📚", "Гайд", "гайд"),
             "custom_disclaimer": "\n\n⚠️ Это универсальная база. В зависимости от карты и врагов, билд стоит менять."
         }]
-    except Exception as ex:
-        return []
+    except Exception: return []
 
 def fetch(src, state):
     t = src["type"]
@@ -573,7 +482,7 @@ def fetch_all(sources, state):
         futs = {s["name"]: pool.submit(fetch, s, state) for s in sources}
         for s in sources:
             try: out[s["name"]] = futs[s["name"]].result(timeout=120)
-            except Exception as ex: out[s["name"]] = None
+            except Exception: out[s["name"]] = None
     return out
 
 def _fatal_check(ex):
@@ -585,13 +494,11 @@ def tg_json(method, payload):
     except urllib.error.HTTPError as ex: _fatal_check(ex); raise
 
 def tg_upload(photo, caption):
-    b = uuid.uuid4().hex
-    body = io.BytesIO()
+    b = uuid.uuid4().hex; body = io.BytesIO()
     for name, val in (("chat_id", CHAT), ("caption", caption), ("parse_mode", "HTML")):
         body.write(f'--{b}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{val}\r\n'.encode())
     body.write((f'--{b}\r\nContent-Disposition: form-data; name="photo"; filename="p.jpg"\r\nContent-Type: image/jpeg\r\n\r\n').encode())
-    body.write(photo)
-    body.write(f"\r\n--{b}--\r\n".encode())
+    body.write(photo); body.write(f"\r\n--{b}--\r\n".encode())
     req = urllib.request.Request(f"https://api.telegram.org/bot{TOKEN}/sendPhoto", data=body.getvalue(), headers={"Content-Type": f"multipart/form-data; boundary={b}"})
     try: return urllib.request.urlopen(req, timeout=60).read()
     except urllib.error.HTTPError as ex: _fatal_check(ex); raise
@@ -601,10 +508,9 @@ def check_telegram():
         me = json.loads(tg_json("getMe", {}))["result"]
         info = json.loads(tg_json("getChatMember", {"chat_id": CHAT, "user_id": me["id"]}))["result"]
     except Exception: return
-    status = info.get("status")
-    if status not in ("administrator", "creator"): raise FatalError("Бот не админ.")
+    if info.get("status") not in ("administrator", "creator"): raise FatalError("Бот не админ.")
 
-TOPICS = [
+TOPICS = [(re.compile(p, re.I), e, l, t) for p, e, l, t in [
     (r"\bmaintenance\b|\bdowntime\b", "🔧", "Технические работы", "техработы"),
     (r"\bleaks?\b|\bleaked\b|\brumou?rs?\b", "👀", "Утечки и слухи", "утечки"),
     (r"\brelease notes\b|\bpatch\b|\bupdate", "🛠", "Обновление", "обновление"),
@@ -613,8 +519,7 @@ TOPICS = [
     (r"\bnew brawler|\bintroducing\b", "🦸", "Новый боец", "новыйбоец"),
     (r"\bbrawl talk\b", "🎤", "Brawl Talk", "BrawlTalk"),
     (r"\bskins?\b|\bcosmetic", "🎨", "Скины", "скины"),
-]
-TOPICS = [(re.compile(p, re.I), e, l, t) for p, e, l, t in TOPICS]
+]]
 DEFAULT_TOPIC = ("📰", "Новости", "новости")
 
 def item_topic(item, important=True):
@@ -624,54 +529,31 @@ def item_topic(item, important=True):
         if pat.search(blob): return emoji, label, tag
     return DEFAULT_TOPIC
 
-PHRASES = {
-    "generic": ["Что думаете? 🤔", "А вы что скажете? 💬", "Жмите 🔥, если понравилось!"],
-    "guide": ["Пользуетесь таким билдом? 🧐", "Заходит сборка? 🔥", "Пробовали так играть? 🎮"],
-}
+PHRASES = {"generic": ["Что думаете? 🤔", "А вы что скажете? 💬", "Жмите 🔥, если понравилось!"], "guide": ["Пользуетесь таким билдом? 🧐", "Заходит сборка? 🔥", "Пробовали так играть? 🎮"]}
 
 def pick_phrase(item):
-    if item.get("topic") and item["topic"][2] == "гайд":
-        return random.choice(PHRASES["guide"])
-    return random.choice(PHRASES["generic"])
-
-def link_label(link):
-    k = canon(link)
-    if k.startswith("yt:"): return "▶️ Смотреть видео"
-    return "🔗 Читать подробнее"
+    return random.choice(PHRASES["guide"] if item.get("topic") and item["topic"][2] == "гайд" else PHRASES["generic"])
 
 def build_post(item, title, text, important, phrase=""):
     esc = html.escape
     emoji, label, tag = item_topic(item, important)
-    blocks = []
-    if important:
-        blocks.append((f"ВАЖНО · {label}", f"<b>🔥 ВАЖНО</b> · {esc(emoji + ' ' + label)}"))
-        blocks.append((title, f"<b>{esc(title[:300])}</b>"))
-    else:
-        blocks.append((f"{emoji} {title}", f"<b>{esc(emoji + ' ' + title[:300])}</b>"))
+    blocks = [(f"{emoji} {title}", f"<b>{esc(emoji + ' ' + title[:300])}</b>")] if not important else [(f"ВАЖНО · {label}", f"<b>🔥 ВАЖНО</b> · {esc(emoji + ' ' + label)}"), (title, f"<b>{esc(title[:300])}</b>")]
     if text: blocks.append((text[:600], esc(text[:600])))
     if item.get("custom_disclaimer"):
-        plain_disc = re.sub(r"<[^>]+>", "", item["custom_disclaimer"])
-        blocks.append((plain_disc, item["custom_disclaimer"]))
+        blocks.append((re.sub(r"<[^>]+>", "", item["custom_disclaimer"]), item["custom_disclaimer"]))
     if phrase: blocks.append((phrase, f"<i>{esc(phrase)}</i>"))
-    link = item.get("link", "") if (important or item.get("force_link")) else ""
-    if link:
-        lab = link_label(link)
-        blocks.append((lab, f'<a href="{esc(link, quote=True)}">{esc(lab)}</a>'))
-    
+    if item.get("link") and (important or item.get("force_link")):
+        lab = "▶️ Смотреть видео" if canon(item["link"]).startswith("yt:") else "🔗 Читать подробнее"
+        blocks.append((lab, f'<a href="{esc(item["link"], quote=True)}">{esc(lab)}</a>'))
     blocks.append((f"#BrawlStars #{tag}", esc(f"#BrawlStars #{tag}")))
     return "\n\n".join(b[1] for b in blocks)
 
 def send(item, important, phrase=""):
     title = item["title"] if item.get("title_ru") else translate(item["title"])
-    text = translate(item.get("text", ""))
-    post = build_post(item, title, text, important, phrase)
-    
+    post = build_post(item, title, translate(item.get("text", "")), important, phrase)
     if item.get("img_bytes"):
-        try:
-            tg_upload(item["img_bytes"], post)
-            return
-        except Exception as ex: print(f"  [ОШИБКА TG] Фото с текстом не ушло: {ex}")
-            
+        try: tg_upload(item["img_bytes"], post); return
+        except Exception as ex: print(f"  [TG] Байты не ушли: {ex}")
     img = item.get("img", "")
     if img:
         try:
@@ -679,15 +561,14 @@ def send(item, important, phrase=""):
             if len(img_data) > 15000:
                 tg_upload(img_data, post)
                 return
-        except Exception as ex: print(f"  [ОШИБКА TG] Картинка не ушла: {ex}")
-
-    try:
-        tg_json("sendMessage", {"chat_id": CHAT, "text": post, "parse_mode": "HTML"})
-    except Exception as ex:
-        print(f"  [ОШИБКА TG] Текст не ушел: {ex}")
+        except Exception as ex: print(f"  [TG] URL не ушло: {ex}")
+    if important:
+        try: tg_json("sendMessage", {"chat_id": CHAT, "text": post, "parse_mode": "HTML"})
+        except Exception as ex: print(f"  [TG] Текст не ушел: {ex}")
+    else:
+        print(f"  [TG] Пропуск (нет картинки): {title}")
 
 BS_BASE = os.environ.get("BS_API_BASE", "https://bsproxy.royaleapi.dev/v1")
-BS_KEY = os.environ.get("BRAWL_API_KEY", "")
 FORCE_META = os.environ.get("FORCE_META", "").strip().lower() in ("1", "true", "yes")
 META_HOUR_UTC = 7
 META_PLAYERS = 200
@@ -796,7 +677,7 @@ def build_meta_post(agg, prev=None, classes=None, min_picks=META_MIN_PICKS, limi
         for i, (n, pk, w, wr, lb) in enumerate(rows[:8], 1)]
     pop = sorted(rows, key=lambda r: r[1], reverse=True)[:5]
     popular = ["🔥 <b>Самые популярные</b>"] + [
-        f"• <b>{esc(n)}</b> — {pct(pk / total)} пикрейта, {pct(wr)} побед" for n, pk, w, wr, lb in pop]
+            f"• <b>{esc(n)}</b> — {pct(pk / total)} пикрейта, {pct(wr)} побед" for n, pk, w, wr, lb in pop]
     deltas = []
     if prev and prev.get("stats"):
         for name, (pk, w) in agg["stats"].items():
@@ -818,14 +699,12 @@ def build_meta_post(agg, prev=None, classes=None, min_picks=META_MIN_PICKS, limi
     analysis = meta_analysis(agg, rows, prev, classes, deltas)
     why = ["💡 <b>Разбор</b>"] + [f"• {esc(a)}" for a in analysis] if analysis else []
     foot = ("<i>Это мета лучших игроков мира.</i>\n\n#BrawlStars #мета")
-    
-    # ИСПРАВЛЕНО: Выкидываем блоки, пока не влезет в лимит
     sections = [top, popular, movers, why, modes]
     while True:
         body = "\n\n".join("\n".join(sec) for sec in sections if sec)
         text = head + "\n\n" + body + "\n\n" + foot
         if len(text) <= limit or not sections: return text
-        sections.pop() # Выкидываем "По режимам", потом "Разбор", потом "Падают" и т.д.
+        sections.pop()
 
 def load_classes(state):
     c = state.get("classes") or {}
@@ -844,7 +723,7 @@ def load_classes(state):
         if mapping:
             state["classes"] = {"ts": time.time(), "map": mapping, "images": images}
             return mapping, images
-    except Exception as ex: pass
+    except Exception: pass
     return c.get("map") or {}, c.get("images", {})
 
 def collect_meta(deadline, now=None):
@@ -867,70 +746,42 @@ def collect_meta(deadline, now=None):
     return agg, len(logs), len(tags)
 
 def maybe_post_meta(state, started, force=False):
-    if not BS_KEY: 
-        print("  [МЕТА] Отключена: нет BRAWL_API_KEY")
-        return False
+    if not BS_KEY: return False
     now = datetime.datetime.now(datetime.timezone.utc)
     today = now.strftime("%Y-%m-%d")
-    
     if not force:
-        if state.get("meta_posted") == today: 
-            print("  [МЕТА] Уже постили сегодня (пропуск)")
-            return False
-        if now.hour < META_HOUR_UTC: 
-            print("  [МЕТА] Еще рано (ждем 10:00 МСК)")
-            return False
-            
+        if state.get("meta_posted") == today or now.hour < META_HOUR_UTC: return False
+        if time.time() - state.get("meta_try", 0) < META_RETRY_MIN * 60: return False
+        if time.time() - started > 330: return False
     state["meta_try"] = time.time()
-    try: 
-        agg, ok, total = collect_meta(time.time() + 150, now)
-    except PermissionError: 
-        print("  [МЕТА] API отклонил ключ (проверь IP 45.79.218.79)")
-        return False
-    except Exception as ex: 
-        print(f"  [МЕТА] Ошибка сбора данных: {ex}")
-        return False
-        
-    if total == 0 or ok < total * 0.6 or agg["battles"] < 150: 
-        print(f"  [МЕТА] Мало данных (журналов {ok}/{total}, боёв {agg['battles']})")
-        return False
-        
+    try: agg, ok, total = collect_meta(time.time() + 150, now)
+    except Exception: return False
+    if total == 0 or ok < total * 0.6 or agg["battles"] < 150: return False
     try: register_names(n for n in agg["stats"])
     except Exception: pass
-    
     classes, images = load_classes(state)
     prev = state.get("meta") or {}
-    
-    rows = rank_rows(agg["stats"], META_MIN_PICKS)
-    # ИСПРАВЛЕНО: limit=1020 гарантирует, что текст влезет в подпись Телеграма
-    text = build_meta_post(agg, prev, classes, limit=1020)
-    
-    if not text: 
-        print("  [МЕТА] Слишком мало бойцов в рейтинге для поста")
-        return False
-        
-    img_bytes = generate_meta_image(rows, images)
-    
-    if img_bytes:
+    if prev.get("date"):
         try:
-            tg_upload(img_bytes, text)
-            print("  [МЕТА] Успешно опубликована с картинкой!")
-        except Exception as ex:
-            print(f"  [МЕТА] Ошибка отправки картинки: {ex}. Шлю текстом...")
-            try: tg_json("sendMessage", {"chat_id": CHAT, "text": text, "parse_mode": "HTML"})
-            except Exception as e: print(f"  [МЕТА] Текст тоже не ушел: {e}")
+            age = (now.date() - datetime.date.fromisoformat(prev["date"])).days
+            if age > 4: prev = {}
+        except Exception: prev = {}
+    rows = rank_rows(agg["stats"], META_MIN_PICKS)
+    text = build_meta_post(agg, prev, classes, limit=1020)
+    if not text: return False
+    img_bytes = generate_meta_image(rows, images)
+    if img_bytes:
+        try: tg_upload(img_bytes, text)
+        except Exception: pass
     else:
-        print("  [МЕТА] Картинка не сгенерировалась, шлю текст.")
         try: tg_json("sendMessage", {"chat_id": CHAT, "text": text, "parse_mode": "HTML"})
-        except Exception as e: print(f"  [МЕТА] Текст не ушел: {e}")
-        
+        except Exception: pass
     state["meta"] = {"date": today, "stats": agg["stats"], "battles": agg["battles"]}
     state["meta_posted"] = today
     return True
 
 def load_state():
-    state = {"seen": [], "sources": [], "daily": {}, "yt": {}, "recent": [], "fails": {}, "phrases": [],
-             "meta": {}, "meta_posted": "", "meta_try": 0, "classes": {}, "posted_guides": []}
+    state = {"seen": [], "sources": [], "daily": {}, "yt": {}, "recent": [], "fails": {}, "phrases": [], "meta": {}, "meta_posted": "", "meta_try": 0, "classes": {}, "posted_guides": []}
     if os.path.exists(STATE_FILE):
         try:
             data = json.load(open(STATE_FILE))
@@ -949,8 +800,8 @@ def main():
     if not TOKEN or not CHAT: sys.exit(1)
     try: check_telegram()
     except FatalError: sys.exit(1)
-    
     state = load_state()
+    load_classes(state)
     seen = set(state["seen"])
     fails = state["fails"]
     today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
@@ -963,7 +814,6 @@ def main():
             seen.add(item_id)
             state["seen"].append(item_id)
 
-    print("1. Начинаю собирать новости из источников...")
     results = fetch_all(SOURCES, state)
     queue = []
     for src in SOURCES:
@@ -977,29 +827,20 @@ def main():
         for it in items:
             if it["id"] not in seen: queue.append((it, src["important"], key))
 
-    print(f"2. Найдено новых записей в очереди: {len(queue)}")
     queue.sort(key=lambda x: not x[1])
-    
     sent = 0
     for it, important, key in queue:
-        if sent >= MAX_PER_RUN or time.time() - started > TIME_BUDGET: 
-            break
+        if sent >= MAX_PER_RUN or time.time() - started > TIME_BUDGET: break
         if not important and state["daily"]["regular"] >= DAILY_REGULAR_LIMIT:
-            mark(it["id"])
-            continue
-        
+            mark(it["id"]); continue
         if key == "brawlify-guides" and state["daily"].get("guides", 0) >= 1 and not FORCE_META:
-            mark(it["id"])
-            continue
-
+            mark(it["id"]); continue
+        if not ensure_image(it, state):
+            mark(it["id"]); continue
         try:
             phrase = pick_phrase(it)
             send(it, important, phrase)
-            print(f"   -> Опубликовано: {it.get('title')}")
-        except Exception as ex:
-            print(f"   [ОШИБКА] Не удалось отправить {it.get('title')}: {ex}")
-            continue
-
+        except Exception: continue
         mark(it["id"])
         sent += 1
         if key == "brawlify-guides":
@@ -1009,14 +850,9 @@ def main():
         save_state(state)
         time.sleep(PAUSE)
 
-    print("3. Проверяю, нужно ли постить мету...")
-    try: 
-        maybe_post_meta(state, started, force=FORCE_META)
-    except Exception as ex: 
-        print(f"  [ОШИБКА МЕТЫ] {ex}")
-
+    try: maybe_post_meta(state, started, force=FORCE_META)
+    except Exception: pass
     save_state(state)
-    print(f"4. Работа завершена. Всего постов: {sent}")
 
 if __name__ == "__main__":
     main()
