@@ -937,4 +937,4 @@ def main():
     
     state = load_state()
     seen = set(state["seen"])
-    fails = 
+    fails = state["fails"]
