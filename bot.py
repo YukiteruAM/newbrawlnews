@@ -32,21 +32,15 @@ SOURCES = [
 KEEP = ["Brawl Stars", "Brawl Pass", "Brawl Talk", "Starr Drop", "Supercell Make", "Supercell ID", "Supercell Store", "Supercell", "Clash Royale", "Clash of Clans", "Hay Day", "Boom Beach"]
 def _keep_pattern(k): return re.escape(k).replace(r"\ ", r"\s?") + "s?"
 KEEP_RE = re.compile(r"\b(" + "|".join(_keep_pattern(k) for k in sorted(KEEP, key=len, reverse=True)) + r")\b", re.I)
-
-BRAWLERS = [
-    "Shelly", "Colt", "Bull", "Brock", "El Primo", "Barley", "Poco", "Rosa", "Jessie", "Dynamike", "Tick", "8-Bit", "Rico", "Darryl", "Penny", "Carl", "Jacky", "Gus", "Bo", "Emz", "EMZ", "Stu", "Piper", "Pam", "Frank", "Bibi", "BiBi", "Bea", "Nani", "Edgar", "Griff", "Grom", "Bonnie", "Gale", "Colette", "Belle", "Ash", "Lola", "Sam", "Mandy", "Maisie", "Hank", "Pearl", "Larry & Lawrie", "Angelo", "Berry", "Shade", "Spike", "Crow", "Leon", "Sandy", "Amber", "Meg", "Surge", "Chester", "Cordelius", "Kit", "Draco", "Kenji", "Mico", "Mortis", "Tara", "Gene", "Max", "Mr. P", "Sprout", "Byron", "Squeak", "Lou", "Ruffs", "Buzz", "Fang", "Eve", "Janet", "Otis", "Buster", "Gray", "R-T", "Willow", "Doug", "Chuck", "Charlie", "Melodie", "Lily", "Clancy", "Moe", "Juju", "Ollie", "Lumi", "Finx", "Jae-Yong", "Kaze", "Alli", "Trunk", "Mina", "Ziggy", "Gigi", "Glowy", "Najia", "Damian", "Starr Nova", "Bolt", "Sirius", "Pierce", "Meeple",
-]
-
+BRAWLERS = ["Shelly", "Colt", "Bull", "Brock", "El Primo", "Barley", "Poco", "Rosa", "Jessie", "Dynamike", "Tick", "8-Bit", "Rico", "Darryl", "Penny", "Carl", "Jacky", "Gus", "Bo", "Emz", "EMZ", "Stu", "Piper", "Pam", "Frank", "Bibi", "BiBi", "Bea", "Nani", "Edgar", "Griff", "Grom", "Bonnie", "Gale", "Colette", "Belle", "Ash", "Lola", "Sam", "Mandy", "Maisie", "Hank", "Pearl", "Larry & Lawrie", "Angelo", "Berry", "Shade", "Spike", "Crow", "Leon", "Sandy", "Amber", "Meg", "Surge", "Chester", "Cordelius", "Kit", "Draco", "Kenji", "Mico", "Mortis", "Tara", "Gene", "Max", "Mr. P", "Sprout", "Byron", "Squeak", "Lou", "Ruffs", "Buzz", "Fang", "Eve", "Janet", "Otis", "Buster", "Gray", "R-T", "Willow", "Doug", "Chuck", "Charlie", "Melodie", "Lily", "Clancy", "Moe", "Juju", "Ollie", "Lumi", "Finx", "Jae-Yong", "Kaze", "Alli", "Trunk", "Mina", "Ziggy", "Gigi", "Glowy", "Najia", "Damian", "Starr Nova", "Bolt", "Sirius", "Pierce", "Meeple"]
 def _names_regex(names):
     alt = "|".join(re.escape(n) for n in sorted(set(names), key=len, reverse=True))
     return re.compile(r"(?<![\w-])(" + alt + r")(?![\w-])", re.I)
 NAMES_RE = _names_regex(BRAWLERS)
 QUOTED_RE = re.compile(r'"[^"\n]{2,40}"|“[^”\n]{2,40}”|«[^»\n]{2,40}»')
-
 def nice_name(n):
     s = (n or "").strip().title()
     return {"Bibi": "BiBi"}.get(s, s)
-
 def register_names(names):
     global NAMES_RE
     new = [nice_name(n) for n in names if n]
@@ -54,7 +48,6 @@ def register_names(names):
     if fresh:
         BRAWLERS.extend(fresh)
         NAMES_RE = _names_regex(BRAWLERS)
-
 ATOM, MEDIA = "{http://www.w3.org/2005/Atom}", "{http://search.yahoo.com/mrss/}"
 CYR = re.compile("[а-яА-ЯёЁ]")
 class FatalError(Exception): pass
@@ -108,7 +101,6 @@ def _mymemory(masked):
     return html.unescape(json.loads(get(url))["responseData"]["translatedText"]).strip()
 
 ENGINES = [_gtx, _mymemory]
-
 def _validate(masked, kept, result):
     rest = re.sub(r"ZZ\d+ZZ", "", masked)
     words = re.findall(r"[A-Za-z]{2,}", rest)
@@ -123,9 +115,7 @@ def _validate(masked, kept, result):
 _BOEC = {"": "боец", "а": "бойца", "у": "бойцу", "ом": "бойцом", "е": "бойце", "ы": "бойцы", "ов": "бойцов", "ам": "бойцам", "ами": "бойцами", "ах": "бойцах"}
 _KUBOK = {"й": "кубок", "я": "кубка", "ю": "кубку", "ем": "кубком", "е": "кубке", "и": "кубки", "ев": "кубков", "ям": "кубкам", "ями": "кубками", "ях": "кубках"}
 _ZABIYAKA = {"а": "боец", "и": "бойцы", "е": "бойце", "у": "бойца", "ой": "бойцом", "": "бойцов", "ам": "бойцам", "ами": "бойцами", "ах": "бойцах"}
-
 def _same_case(src, word): return word[:1].upper() + word[1:] if src[:1].isupper() else word
-
 def fix_ru(text):
     text = re.sub(r"\b(скандалист|драчун|бравлер)(а|у|ом|е|ы|ов|ам|ами|ах)?\b", lambda m: _same_case(m.group(0), _BOEC[m.group(2) or ""]), text, flags=re.I)
     text = re.sub(r"\bзабияк(а|и|е|у|ой|ам|ами|ах)?\b", lambda m: _same_case(m.group(0), _ZABIYAKA[m.group(1) or ""]), text, flags=re.I)
@@ -151,7 +141,6 @@ def translate(text, mask_quotes=False):
 
 GENERIC = set("the and for with from this that your you are has have now out get into will its all more here how what when why about was were can our their just new update updates video videos official brawler brawlers skin skins game games".split())
 MONTHS = set("january february march april may june july august september october november december jan feb mar apr jun jul aug sep sept oct nov dec".split())
-
 def canon(url):
     try: u = urllib.parse.urlparse(url.strip())
     except Exception: return ""
@@ -185,13 +174,10 @@ def keys_of(item):
     return ks
 
 SHORT_STOP = set("an of in on to is it as at by or vs x".split())
-
 def tokens_of(title):
     t = KEEP_RE.sub(" ", (title or "").lower())
     return {w[:-1] if w.endswith("s") and len(w) > 4 else w for w in re.findall(r"[a-z0-9]+", t) if w not in GENERIC and w not in SHORT_STOP}
-
 def _marks(tokens): return {w for w in tokens if w.isdigit() or w in MONTHS or len(w) <= 2}
-
 def is_dup(keys, toks, important, recent, now=None):
     now = now or time.time()
     for r in recent:
@@ -204,7 +190,6 @@ def is_dup(keys, toks, important, recent, now=None):
         common = len(toks & rt)
         if (common >= 3 and common / min(len(toks), len(rt)) >= 0.6) or (len(toks) >= 2 and toks == rt): return True
     return False
-
 def ctext(e, *tags):
     for tag in tags:
         n = e.find(tag)
@@ -301,12 +286,11 @@ def fetch_youtube(src, state):
         state.get("yt", {}).pop(src["handle"], None)
         raise ValueError(f"wrong channel @{src['handle']}")
     return parse_feed(xml)
+
 def get_base_image():
     W, H = 1080, 1080
-    # Создаем стильный темный Mesh-градиент
     bg = Image.new('RGBA', (W, H), (15, 10, 30, 255))
     colors = [(130, 0, 255), (0, 100, 255), (255, 0, 150), (255, 180, 0)]
-    
     for _ in range(5):
         c = random.choice(colors)
         r = random.randint(500, 900)
@@ -314,15 +298,12 @@ def get_base_image():
         layer = Image.new('RGBA', (W, H), (0, 0, 0, 0))
         ImageDraw.Draw(layer).ellipse((x, y, x+r, y+r), fill=c + (100,))
         bg = Image.alpha_composite(bg, layer.filter(ImageFilter.GaussianBlur(radius=200)))
-
-    # Добавляем сетку
     grid = Image.new('RGBA', (W, H), (0, 0, 0, 0))
     g_draw = ImageDraw.Draw(grid)
     for x in range(0, W, 60): g_draw.line([(x, 0), (x, H)], fill=(255, 255, 255, 15), width=1)
     for y in range(0, H, 60): g_draw.line([(0, y), (W, y)], fill=(255, 255, 255, 15), width=1)
     bg = Image.alpha_composite(bg, grid)
 
-    # Логотип со свечением
     if os.path.exists("logo.png"):
         try:
             logo = Image.open("logo.png").convert("RGBA")
@@ -332,30 +313,26 @@ def get_base_image():
             ImageDraw.Draw(mask).ellipse((0, 0, 140, 140), fill=255)
             circle_logo = Image.new("RGBA", (140, 140), (0, 0, 0, 0))
             circle_logo.paste(logo, (0, 0), mask)
-            
             glow = Image.new('RGBA', (W, H), (0,0,0,0))
             ImageDraw.Draw(glow).ellipse([(50, 30), (210, 190)], fill=(255, 204, 0, 120))
             bg = Image.alpha_composite(bg, glow.filter(ImageFilter.GaussianBlur(radius=25)))
-            
             draw = ImageDraw.Draw(bg)
             draw.ellipse([(58, 38), (202, 182)], outline="#ffcc00", width=6)
             bg.paste(circle_logo, (60, 40), circle_logo)
         except Exception: pass
 
-    # Шрифт для названия канала
     font_path = "LilitaOne-Regular.ttf"
     if not os.path.exists(font_path):
         try:
-            with open(font_path, "wb") as f: f.write(download("https://github.com/google/fonts/raw/main/ofl/lilitaone/LilitaOne-Regular.ttf"))
+            with open(font_path, "wb") as f: f.write(download("https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/lilitaone/LilitaOne-Regular.ttf"))
         except Exception: pass
     try: font_channel = ImageFont.truetype(font_path, 65)
     except: font_channel = ImageFont.load_default()
-    
     draw = ImageDraw.Draw(bg)
     draw.text((230, 70), "NEW BRAWL NEWS", font=font_channel, fill="white", stroke_width=4, stroke_fill="black")
     return bg
 
-def generate_meta_image(rows, ids):
+def generate_meta_image(rows, images):
     try:
         bg = get_base_image()
         try:
@@ -363,22 +340,17 @@ def generate_meta_image(rows, ids):
             font_tier = ImageFont.truetype("LilitaOne-Regular.ttf", 80)
             font_pct = ImageFont.truetype("LilitaOne-Regular.ttf", 35)
         except: font_title = font_tier = font_pct = ImageFont.load_default()
-        
         draw = ImageDraw.Draw(bg)
         draw.text((250, 160), "МЕТА BRAWL STARS", font=font_title, fill="#ffcc00", stroke_width=3, stroke_fill="black")
-        
-        # Три тира
         for y, letter, color, brawlers in [(280, "S", "#cc0044", rows[:4]), (480, "A", "#cc6600", rows[4:8]), (680, "B", "#ccaa00", rows[8:12])]:
             draw.rounded_rectangle([(60, y), (1020, y+180)], radius=20, fill=color)
             draw.text((90, y+30), letter, font=font_tier, fill="white", stroke_width=4, stroke_fill="black")
-            
-            # Центрирование картинок
             x_offset = 260 + (4 - len(brawlers)) * 85
             for n, pk, w, wr, lb in brawlers:
-                b_id = ids.get(n.upper())
-                if not b_id: continue
+                img_url = images.get(n.upper())
+                if not img_url: continue
                 try:
-                    b_img = Image.open(io.BytesIO(download(f"https://cdn.brawlify.com/brawlers/borderless/{b_id}.png"))).convert("RGBA")
+                    b_img = Image.open(io.BytesIO(download(img_url))).convert("RGBA")
                     b_img.thumbnail((140, 140), Image.Resampling.LANCZOS)
                     bg.paste(b_img, (x_offset, y+20), b_img)
                     draw.text((x_offset+20, y+140), f"{pct(wr)}", font=font_pct, fill="white", stroke_width=2, stroke_fill="black")
@@ -393,58 +365,56 @@ def generate_guide_image(b, gadget_name, sp_name):
         font_ru_path = "Roboto-Bold.ttf"
         if not os.path.exists(font_ru_path):
             try:
-                with open(font_ru_path, "wb") as f: f.write(download("https://github.com/google/fonts/raw/main/apache/roboto/Roboto-Bold.ttf"))
+                with open(font_ru_path, "wb") as f: f.write(download("https://cdn.jsdelivr.net/gh/google/fonts@main/apache/roboto/Roboto-Bold.ttf"))
             except Exception: pass
         try:
-            font_name = ImageFont.truetype("LilitaOne-Regular.ttf", 150)
-            font_ru_big = ImageFont.truetype(font_ru_path, 70)
-            font_ru_med = ImageFont.truetype(font_ru_path, 50)
-        except: font_name = font_ru_big = font_ru_med = ImageFont.load_default()
-
+            font_name = ImageFont.truetype("LilitaOne-Regular.ttf", 140)
+            font_ru_big = ImageFont.truetype(font_ru_path, 65)
+            font_ru_med = ImageFont.truetype(font_ru_path, 45)
+            font_small = ImageFont.truetype(font_ru_path, 35)
+        except: font_name = font_ru_big = font_ru_med = font_small = ImageFont.load_default()
         draw = ImageDraw.Draw(bg)
         draw.text((60, 220), "ГАЙД НА БОЙЦА", font=font_ru_big, fill="#ffcc00", stroke_width=4, stroke_fill="black")
         draw.text((60, 310), b['name'].upper(), font=font_name, fill="white", stroke_width=8, stroke_fill="black")
-        draw.text((65, 490), f"Класс: {(b.get('class') or {}).get('name', 'Боец')}", font=font_ru_big, fill="#aaddff", stroke_width=3, stroke_fill="black")
-
-        # Огромный 3D-рендер
-        if b.get('id'):
+        role = (b.get("class") or {}).get("name", "Боец")
+        draw.text((65, 490), f"Класс: {role}", font=font_ru_big, fill="#aaddff", stroke_width=3, stroke_fill="black")
+        img_url = b.get("imageUrl")
+        if img_url:
             try:
-                b_img = Image.open(io.BytesIO(download(f"https://cdn.brawlify.com/brawlers/borderless/{b['id']}.png"))).convert("RGBA")
-                b_img.thumbnail((750, 750), Image.Resampling.LANCZOS)
-                bg.paste(b_img, (350, 250), b_img)
+                b_img = Image.open(io.BytesIO(download(img_url))).convert("RGBA")
+                b_img.thumbnail((600, 600), Image.Resampling.LANCZOS)
+                bg.paste(b_img, (430, 320), b_img)
             except Exception: pass
-
-        # Стеклянная плашка
         glass = Image.new('RGBA', (1080, 1080), (0, 0, 0, 0))
         g_draw = ImageDraw.Draw(glass)
-        g_draw.rounded_rectangle([(60, 720), (1020, 1030)], radius=30, fill=(255, 255, 255, 30), outline="#ffcc00", width=6)
+        g_draw.rounded_rectangle([(60, 720), (1020, 1030)], radius=30, fill=(20, 10, 40, 220), outline="#ffcc00", width=6)
         bg = Image.alpha_composite(bg, glass)
-        
         draw = ImageDraw.Draw(bg)
         draw.text((90, 750), "РЕКОМЕНДУЕМЫЙ БИЛД", font=font_ru_big, fill="#ffcc00", stroke_width=3, stroke_fill="black")
-        draw.rounded_rectangle([(90, 840), (230, 980)], radius=15, outline="#ffcc00", width=6)
-        draw.rounded_rectangle([(340, 840), (480, 980)], radius=15, outline="#ffcc00", width=6)
-
+        draw.rounded_rectangle([(80, 820), (220, 960)], radius=15, outline="#ffcc00", width=6)
+        draw.rounded_rectangle([(320, 820), (460, 960)], radius=15, outline="#ffcc00", width=6)
         if b.get("gadgets"):
             try:
                 g_img = Image.open(io.BytesIO(download(b['gadgets'][0].get('imageUrl')))).convert("RGBA")
                 g_img.thumbnail((120, 120), Image.Resampling.LANCZOS)
-                bg.paste(g_img, (100, 850), g_img)
+                bg.paste(g_img, (90, 830), g_img)
             except Exception: pass
         if b.get("starPowers"):
             try:
                 s_img = Image.open(io.BytesIO(download(b['starPowers'][0].get('imageUrl')))).convert("RGBA")
                 s_img.thumbnail((120, 120), Image.Resampling.LANCZOS)
-                bg.paste(s_img, (350, 850), s_img)
+                bg.paste(s_img, (330, 830), s_img)
             except Exception: pass
-
-        draw.text((90, 990), "Гаджет", font=font_ru_med, fill="#aaddff", stroke_width=2, stroke_fill="black")
-        draw.text((340, 990), "Зв. Сила", font=font_ru_med, fill="#aaddff", stroke_width=2, stroke_fill="black")
-        draw.text((100, 700), gadget_name, font=font_ru_med, fill="white", stroke_width=2, stroke_fill="black")
-        draw.text((350, 700), sp_name, font=font_ru_med, fill="white", stroke_width=2, stroke_fill="black")
-
+        draw.text((80, 970), "Гаджет", font=font_small, fill="#aaddff")
+        draw.text((320, 970), "Зв. Сила", font=font_small, fill="#aaddff")
+        g_text = gadget_name[:20] + "..." if len(gadget_name) > 20 else gadget_name
+        s_text = sp_name[:20] + "..." if len(sp_name) > 20 else sp_name
+        draw.text((90, 1000), g_text, font=font_ru_med, fill="white")
+        draw.text((330, 1000), s_text, font=font_ru_med, fill="white")
         out = io.BytesIO(); bg.convert("RGB").save(out, format="JPEG", quality=95); return out.getvalue()
-    except Exception: return b""
+    except Exception as e: 
+        print("Ошибка генерации гайда:", e)
+        return b""
 
 def load_classes(state):
     c = state.get("classes") or {}
@@ -472,8 +442,10 @@ def ensure_image(item, state):
     m = NAMES_RE.search(item.get("title", ""))
     if m:
         classes, images, ids = load_classes(state)
-        b_id = ids.get(nice_name(m.group(1)).upper())
-        if b_id: item["img"] = f"https://cdn.brawlify.com/brawlers/borderless/{b_id}.png"; return True
+        img_url = images.get(nice_name(m.group(1)).upper())
+        if img_url: 
+            item["img"] = img_url
+            return True
     item["img"] = "https://cdn.brawlify.com/brawlers/borderless/16000000.png"
     return True
 
@@ -779,7 +751,7 @@ def maybe_post_meta(state, started, force=False):
     rows = rank_rows(agg["stats"], META_MIN_PICKS)
     text = build_meta_post(agg, prev, classes, limit=1020)
     if not text: return False
-    img_bytes = generate_meta_image(rows, ids)
+    img_bytes = generate_meta_image(rows, images)
     if img_bytes:
         try: tg_upload(img_bytes, text)
         except Exception: pass
@@ -817,13 +789,11 @@ def main():
     today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
     if state["daily"].get("date") != today:
         state["daily"] = {"date": today, "regular": 0, "guides": 0}
-
     def mark(item_id):
         fails.pop(item_id, None)
         if item_id not in seen:
             seen.add(item_id)
             state["seen"].append(item_id)
-
     results = fetch_all(SOURCES, state)
     queue = []
     for src in SOURCES:
@@ -836,7 +806,6 @@ def main():
             continue
         for it in items:
             if it["id"] not in seen: queue.append((it, src["important"], key))
-
     queue.sort(key=lambda x: not x[1])
     sent = 0
     for it, important, key in queue:
@@ -859,7 +828,6 @@ def main():
             state["daily"]["regular"] += 1
         save_state(state)
         time.sleep(PAUSE)
-
     try: maybe_post_meta(state, started, force=FORCE_META)
     except Exception: pass
     save_state(state)
