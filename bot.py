@@ -364,7 +364,6 @@ def fetch_youtube(src, state):
         raise ValueError(f"канал @{src['handle']} называется «{name}», это не тот канал")
     return parse_feed(xml)
 
-# --- БАЗОВАЯ ОТРИСОВКА (ГРАДИЕНТ, ШРИФТ, ЛОГО) ---
 def get_base_image():
     W, H = 1080, 1080
     base = Image.new('RGB', (W, H), "#2d0059")
@@ -377,7 +376,6 @@ def get_base_image():
     mask.putdata(mask_data)
     bg = Image.composite(top, base, mask).convert("RGBA")
     
-    # Логотип и название
     if os.path.exists("logo.png"):
         try:
             logo = Image.open("logo.png").convert("RGBA")
@@ -391,14 +389,14 @@ def get_base_image():
             draw = ImageDraw.Draw(bg)
             draw.ellipse([(58, 38), (202, 182)], outline="#ffcc00", width=5)
             bg.paste(circle_logo, (60, 40), circle_logo)
-        except Exception as e: print("Ошибка лого:", e)
+        except Exception as e: pass
             
     font_path = "LilitaOne-Regular.ttf"
     if not os.path.exists(font_path):
         try:
             font_url = "https://github.com/google/fonts/raw/main/ofl/lilitaone/LilitaOne-Regular.ttf"
             with open(font_path, "wb") as f: f.write(download(font_url))
-        except Exception as e: print("Не удалось скачать шрифт:", e)
+        except Exception as e: pass
         
     try: font_channel = ImageFont.truetype(font_path, 55)
     except: font_channel = ImageFont.load_default()
@@ -407,7 +405,6 @@ def get_base_image():
     draw.text((230, 70), "NEW BRAWL NEWS", font=font_channel, fill="white", stroke_width=3, stroke_fill="black")
     return bg
 
-# --- ГЕНЕРАЦИЯ КАРТИНКИ ДЛЯ ГАЙДА ---
 def generate_guide_image(b, gadget_name, sp_name):
     try:
         bg = get_base_image()
@@ -426,4 +423,435 @@ def generate_guide_image(b, gadget_name, sp_name):
         draw.text((60, 270), b['name'].upper(), font=font_name, fill="white", stroke_width=5, stroke_fill="black")
         
         role = (b.get("class") or {}).get("name", "Боец")
-        draw.text((65, 410), f"Класс: {role}", font=font_class, fill="#ffcc00", stroke_width=2, stroke_fill="black
+        draw.text((65, 410), f"Класс: {role}", font=font_class, fill="#ffcc00", stroke_width=2, stroke_fill="black")
+
+        img_url = b.get("imageUrl2") or b.get("imageUrl")
+        if img_url:
+            try:
+                b_img = Image.open(io.BytesIO(download(img_url))).conv
+                  def generate_meta_image(rows, images):
+    try:
+        bg = get_base_image()
+        draw = ImageDraw.Draw(bg)
+        
+        font_path = "LilitaOne-Regular.ttf"
+        try:
+            font_title = ImageFont.truetype(font_path, 70)
+            font_tier = ImageFont.truetype(font_path, 80)
+            font_pct = ImageFont.truetype(font_path, 35)
+        except:
+            font_title = font_tier = font_pct = ImageFont.load_default()
+
+        draw.text((250, 160), "МЕТА BRAWL STARS", font=font_title, fill="#ffcc00", stroke_width=3, stroke_fill="black")
+
+        def draw_tier(y, letter, color, brawlers):
+            draw.rounded_rectangle([(60, y), (1020, y+180)], radius=20, fill=color)
+            draw.text((90, y+30), letter, font=font_tier, fill="white", stroke_width=4, stroke_fill="black")
+            
+            x_offset = 260
+            for n, pk, w, wr, lb in brawlers:
+                img_url = images.get(n.upper(), "")
+                if not img_url: continue
+                try:
+                    b_img = Image.open(io.BytesIO(download(img_url))).convert("RGBA")
+                    b_img.thumbnail((140, 140))
+                    bg.paste(b_img, (x_offset, y+20), b_img)
+                    draw.text((x_offset+20, y+140), f"{pct(wr)}", font=font_pct, fill="white", stroke_width=2, stroke_fill="black")
+                except: pass
+                x_offset += 170
+
+        draw_tier(280, "S", "#cc0044", rows[:4])
+        draw_tier(480, "A", "#cc6600", rows[4:8])
+        draw_tier(680, "B", "#ccaa00", rows[8:12])
+
+        out = io.BytesIO()
+        bg.convert("RGB").save(out, format="JPEG", quality=95)
+        return out.getvalue()
+    except Exception as e:
+        return b""
+
+def fetch_guide(src, state):
+    try:
+        if state.get("daily", {}).get("guides", 0) >= 1:
+            return [] 
+            
+        data = json.loads(get("https://api.brawlapi.com/v1/brawlers"))
+        brawlers = data.get("list", [])
+        if not brawlers: return []
+        
+        posted = state.get("posted_guides", [])
+        available = [b for b in brawlers if b["name"] not in posted]
+        if not available:
+            state["posted_guides"] = []
+            available = brawlers
+            
+        b = random.choice(available)
+        state.setdefault("posted_guides", []).append(b["name"])
+        
+        g_name = b["gadgets"][0]["name"] if b.get("gadgets") else "Нет данных"
+        s_name = b["starPowers"][0]["name"] if b.get("starPowers") else "Нет данных"
+        
+        img_bytes = generate_guide_image(b, g_name, s_name)
+        
+        text = (
+            f"📚 <b>Гайд на бойца: {b['name']}</b>\n\n"
+            f"🛠 <b>Гаджет:</b> {g_name}\n"
+            f"⭐ <b>Звездная сила:</b> {s_name}\n\n"
+            f"💡 <b>Совет:</b> Играйте на своей дистанции, следите за картой и не стесняйтесь отступать для восстановления ХП."
+        )
+        
+        return [{
+            "id": f"guide:{b['name']}:{int(time.time()/86400)}",
+            "title": f"Гайд на бойца: {b['name']}",
+            "text": text,
+            "img_bytes": img_bytes,
+            "link": f"https://brawlify.com/stats/brawlers/{b['id']}",
+            "force_link": True,
+            "topic": ("📚", "Гайд", "гайд"),
+            "custom_disclaimer": "\n\n⚠️ <i>Это универсальная база. В зависимости от карты, режима и врагов на поле, билд и гаджеты стоит менять по ситуации.</i>"
+        }]
+    except Exception as ex:
+        return []
+
+def fetch(src, state):
+    t = src["type"]
+    if t == "supercell": items = fetch_supercell(src, state)
+    elif t == "appstore": items = fetch_appstore(src, state)
+    elif t == "youtube": items = fetch_youtube(src, state)
+    elif t == "guide": items = fetch_guide(src, state)
+    else: items = parse_feed(get(src["url"]))
+    if src.get("link"):
+        for it in items: it["force_link"] = True
+    return items
+
+def fetch_all(sources, state):
+    out = {}
+    with ThreadPoolExecutor(max_workers=max(1, min(6, len(sources)))) as pool:
+        futs = {s["name"]: pool.submit(fetch, s, state) for s in sources}
+        for s in sources:
+            try: out[s["name"]] = futs[s["name"]].result(timeout=120)
+            except Exception as ex: out[s["name"]] = None
+    return out
+
+def _fatal_check(ex):
+    if ex.code in (401, 403): raise FatalError("Telegram отказал.")
+
+def tg_json(method, payload):
+    req = urllib.request.Request(f"https://api.telegram.org/bot{TOKEN}/{method}", data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"})
+    try: return urllib.request.urlopen(req, timeout=30).read()
+    except urllib.error.HTTPError as ex: _fatal_check(ex); raise
+
+def tg_upload(photo, caption):
+    b = uuid.uuid4().hex
+    body = io.BytesIO()
+    for name, val in (("chat_id", CHAT), ("caption", caption), ("parse_mode", "HTML")):
+        body.write(f'--{b}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{val}\r\n'.encode())
+    body.write((f'--{b}\r\nContent-Disposition: form-data; name="photo"; filename="p.jpg"\r\nContent-Type: image/jpeg\r\n\r\n').encode())
+    body.write(photo)
+    body.write(f"\r\n--{b}--\r\n".encode())
+    req = urllib.request.Request(f"https://api.telegram.org/bot{TOKEN}/sendPhoto", data=body.getvalue(), headers={"Content-Type": f"multipart/form-data; boundary={b}"})
+    try: return urllib.request.urlopen(req, timeout=60).read()
+    except urllib.error.HTTPError as ex: _fatal_check(ex); raise
+
+def check_telegram():
+    try:
+        me = json.loads(tg_json("getMe", {}))["result"]
+        info = json.loads(tg_json("getChatMember", {"chat_id": CHAT, "user_id": me["id"]}))["result"]
+    except Exception: return
+    status = info.get("status")
+    if status not in ("administrator", "creator"): raise FatalError("Бот не админ.")
+
+TOPICS = [
+    (r"\bmaintenance\b|\bdowntime\b", "🔧", "Технические работы", "техработы"),
+    (r"\bleaks?\b|\bleaked\b|\brumou?rs?\b", "👀", "Утечки и слухи", "утечки"),
+    (r"\brelease notes\b|\bpatch\b|\bupdate", "🛠", "Обновление", "обновление"),
+    (r"\bworld finals\b|\besports\b", "🏆", "Киберспорт", "киберспорт"),
+    (r"\bcrossover|\bcollab\b", "🤝", "Коллаборация", "коллаборация"),
+    (r"\bnew brawler|\bintroducing\b", "🦸", "Новый боец", "новыйбоец"),
+    (r"\bbrawl talk\b", "🎤", "Brawl Talk", "BrawlTalk"),
+    (r"\bskins?\b|\bcosmetic", "🎨", "Скины", "скины"),
+]
+TOPICS = [(re.compile(p, re.I), e, l, t) for p, e, l, t in TOPICS]
+DEFAULT_TOPIC = ("📰", "Новости", "новости")
+
+def item_topic(item, important=True):
+    if item.get("topic"): return item["topic"]
+    blob = f"{item.get('title', '')} {item.get('text', '')}"
+    for pat, emoji, label, tag in TOPICS:
+        if pat.search(blob): return emoji, label, tag
+    return DEFAULT_TOPIC
+
+PHRASES = {
+    "generic": ["Что думаете? 🤔", "А вы что скажете? 💬", "Жмите 🔥, если понравилось!"],
+    "guide": ["Пользуетесь таким билдом? 🧐", "Заходит сборка? 🔥", "Пробовали так играть? 🎮"],
+}
+
+def pick_phrase(item):
+    if item.get("topic") and item["topic"][2] == "гайд":
+        return random.choice(PHRASES["guide"])
+    return random.choice(PHRASES["generic"])
+
+def link_label(link):
+    k = canon(link)
+    if k.startswith("yt:"): return "▶️ Смотреть видео"
+    return "🔗 Читать подробнее"
+
+def build_post(item, title, text, important, phrase=""):
+    esc = html.escape
+    emoji, label, tag = item_topic(item, important)
+    blocks = []
+    if important:
+        blocks.append((f"ВАЖНО · {label}", f"<b>🔥 ВАЖНО</b> · {esc(emoji + ' ' + label)}"))
+        blocks.append((title, f"<b>{esc(title[:300])}</b>"))
+    else:
+        blocks.append((f"{emoji} {title}", f"<b>{esc(emoji + ' ' + title[:300])}</b>"))
+    if text: blocks.append((text[:600], esc(text[:600])))
+    if item.get("custom_disclaimer"):
+        plain_disc = re.sub(r"<[^>]+>", "", item["custom_disclaimer"])
+        blocks.append((plain_disc, item["custom_disclaimer"]))
+    if phrase: blocks.append((phrase, f"<i>{esc(phrase)}</i>"))
+    link = item.get("link", "") if (important or item.get("force_link")) else ""
+    if link:
+        lab = link_label(link)
+        blocks.append((lab, f'<a href="{esc(link, quote=True)}">{esc(lab)}</a>'))
+    
+    blocks.append((f"#BrawlStars #{tag}", esc(f"#BrawlStars #{tag}")))
+    return "\n\n".join(b[1] for b in blocks)
+
+def send(item, important, phrase=""):
+    title = item["title"] if item.get("title_ru") else translate(item["title"])
+    text = translate(item.get("text", ""))
+    post = build_post(item, title, text, important, phrase)
+    
+    if item.get("img_bytes"):
+        try:
+            tg_upload(item["img_bytes"], post)
+            return
+        except Exception as ex: pass
+            
+    img = item.get("img", "")
+    if img:
+        try:
+            img_data = download(img)
+            if len(img_data) > 15000:
+                tg_upload(img_data, post)
+                return
+        except Exception: pass
+
+    tg_json("sendMessage", {"chat_id": CHAT, "text": post, "parse_mode": "HTML"})
+
+BS_BASE = os.environ.get("BS_API_BASE", "https://bsproxy.royaleapi.dev/v1")
+BS_KEY = os.environ.get("BRAWL_API_KEY", "")
+FORCE_META = os.environ.get("FORCE_META", "").strip().lower() in ("1", "true", "yes")
+META_HOUR_UTC = 7
+META_PLAYERS = 200
+META_WINDOW_H = 24
+META_MIN_PICKS = 25
+META_MODE_MIN_BATTLES = 100
+META_RETRY_MIN = 60
+META_TYPES = {"ranked", "soloRanked", "teamRanked"}
+
+MODES_RU = {"gemGrab": "Захват кристаллов", "brawlBall": "Броулбол", "heist": "Ограбление", "hotZone": "Горячая зона", "knockout": "Нокаут", "bounty": "Награда за поимку"}
+CLASSES_RU = {"Damage Dealer": "Бойцы урона", "Tank": "Танки", "Support": "Поддержка", "Controller": "Контролёры", "Assassin": "Убийцы", "Marksman": "Снайперы", "Artillery": "Артиллерия"}
+
+def bs_api(path):
+    raw = get(BS_BASE + path, {"Authorization": "Bearer " + BS_KEY, "Accept": "application/json"}, tries=3)
+    return json.loads(raw)
+
+def mode_name(m): return MODES_RU.get(m) or re.sub(r"(?<!^)(?=[A-Z])", " ", m).title()
+def parse_bt(s): return datetime.datetime.strptime(s[:15], "%Y%m%dT%H%M%S").replace(tzinfo=datetime.timezone.utc)
+
+def aggregate(logs, now, types=META_TYPES):
+    seen, stats, modes, battles = set(), {}, {}, 0
+    for owner, items in logs.items():
+        for it in items or []:
+            b = it.get("battle") or {}
+            if (types is not None and b.get("type") not in types) or b.get("type") in ("friendly", "tournament"): continue
+            teams = b.get("teams")
+            if not (isinstance(teams, list) and len(teams) == 2) or b.get("result") not in ("victory", "defeat"): continue
+            try: when = parse_bt(it["battleTime"])
+            except Exception: continue
+            if (now - when).total_seconds() > META_WINDOW_H * 3600: continue
+            idx = next((i for i, tm in enumerate(teams) if any(p.get("tag") == owner for p in tm)), None)
+            if idx is None: continue
+            key = it["battleTime"] + "|" + ",".join(sorted(p.get("tag", "") for tm in teams for p in tm))
+            if key in seen: continue
+            seen.add(key)
+            winner = idx if b["result"] == "victory" else 1 - idx
+            mode = b.get("mode") or (it.get("event") or {}).get("mode") or "unknown"
+            md = modes.setdefault(mode, {"n": 0, "b": {}})
+            md["n"] += 1
+            battles += 1
+            for i, tm in enumerate(teams):
+                for p in tm:
+                    name = (p.get("brawler") or {}).get("name")
+                    if not name: continue
+                    won = 1 if i == winner else 0
+                    for d in (stats, md["b"]):
+                        row = d.setdefault(name, [0, 0])
+                        row[0] += 1
+                        row[1] += won
+    return {"battles": battles, "stats": stats, "modes": modes}
+
+def wilson_lb(wins, n, z=1.0):
+    if n <= 0: return 0.0
+    p = wins / n
+    return (p + z * z / (2 * n) - z * math.sqrt((p * (1 - p) + z * z / (4 * n)) / n)) / (1 + z * z / n)
+
+def pct(x, digits=1): return f"{x * 100:.{digits}f}".replace(".", ",") + "%"
+
+def rank_rows(stats, min_picks):
+    rows = [(nice_name(n), pk, w, w / pk, wilson_lb(w, pk)) for n, (pk, w) in stats.items() if pk >= min_picks]
+    return sorted(rows, key=lambda r: r[4], reverse=True)
+
+def meta_analysis(agg, rows, prev, classes, deltas):
+    out, total = [], agg["battles"] * 6
+    if not rows: return out
+    lead = rows[0]
+    pr = lead[1] / total
+    s = f"{lead[0]} лидирует: {pct(lead[3])} побед при пикрейте {pct(pr)}."
+    if pr < 0.01: s += " Берут его редко, так что это скорее нишевая сила, чем универсальный выбор."
+    elif pr >= 0.025: s += " Его не только часто берут, но и выигрывают: это настоящий мета-пик."
+    out.append(s)
+    pop = max(rows, key=lambda r: r[1])
+    if pop[0] != lead[0]:
+        ppr = pop[1] / total
+        if pop[3] < 0.48: out.append(f"Самый популярный боец {pop[0]} ({pct(ppr)} пикрейта) выигрывает только {pct(pop[3])}: его берут скорее по привычке, чем из-за силы.")
+        elif pop[3] >= 0.53: out.append(f"Самый популярный боец {pop[0]} ({pct(ppr)}) ещё и силён: {pct(pop[3])} побед.")
+        else: out.append(f"Самый популярный боец {pop[0]} ({pct(ppr)}) показывает средний результат: {pct(pop[3])} побед.")
+    risers = [d for d in deltas if d[1] > 0][:1]
+    fallers = [d for d in deltas if d[1] < 0][:1]
+    if risers: out.append(f"За сутки заметнее всех вырос {risers[0][0]}: {risers[0][1] * 100:+.1f} п.п. побед.".replace(".", ","))
+    if fallers: out.append(f"Сильнее всех просел {fallers[0][0]}: {fallers[0][1] * 100:+.1f} п.п. побед.".replace(".", ","))
+    if classes:
+        agg_cls = {}
+        for name, (pk, w) in agg["stats"].items():
+            c = classes.get(name.upper())
+            if c in CLASSES_RU:
+                a = agg_cls.setdefault(c, [0, 0])
+                a[0] += pk
+                a[1] += w
+        good = {c: v[1] / v[0] for c, v in agg_cls.items() if v[0] >= 150}
+        if len(good) >= 3:
+            best, worst = max(good, key=good.get), min(good, key=good.get)
+            if good[best] - good[worst] >= 0.015:
+                out.append(f"Из классов впереди «{CLASSES_RU[best]}» ({pct(good[best])}), позади «{CLASSES_RU[worst]}» ({pct(good[worst])}).")
+    return out
+
+def build_meta_post(agg, prev=None, classes=None, min_picks=META_MIN_PICKS, limit=3900):
+    esc = html.escape
+    rows = rank_rows(agg["stats"], min_picks)
+    if len(rows) < 5: return ""
+    total = agg["battles"] * 6
+    head = ("📊 <b>МЕТА BRAWL STARS</b> · топ-игроки мира\n"
+            f"<i>{agg['battles']} боёв за последние сутки; рейтинг учитывает число боёв</i>")
+    top = ["🏆 <b>Сильнее всех</b>"] + [
+        f"{i}. <b>{esc(n)}</b> — {pct(wr)} побед · пикрейт {pct(pk / total)}"
+        for i, (n, pk, w, wr, lb) in enumerate(rows[:8], 1)]
+    pop = sorted(rows, key=lambda r: r[1], reverse=True)[:5]
+    popular = ["🔥 <b>Самые популярные</b>"] + [
+        f"• <b>{esc(n)}</b> — {pct(pk / total)} пикрейта, {pct(wr)} побед" for n, pk, w, wr, lb in pop]
+    deltas = []
+    if prev and prev.get("stats"):
+        for name, (pk, w) in agg["stats"].items():
+            old = prev["stats"].get(name)
+            if old and pk >= 40 and old[0] >= 40:
+                d = w / pk - old[1] / old[0]
+                if abs(d) >= 0.03: deltas.append((nice_name(name), d))
+        deltas.sort(key=lambda x: x[1], reverse=True)
+    movers = []
+    ups = [d for d in deltas if d[1] > 0][:3]
+    downs = [d for d in reversed(deltas) if d[1] < 0][:3]
+    if ups: movers.append("📈 <b>Растут за сутки</b>: " + ", ".join(f"{esc(n)} ({d * 100:+.1f} п.п.)".replace(".", ",") for n, d in ups))
+    if downs: movers.append("📉 <b>Падают за сутки</b>: " + ", ".join(f"{esc(n)} ({d * 100:+.1f} п.п.)".replace(".", ",") for n, d in downs))
+    modes = ["🧭 <b>По режимам</b>"]
+    for mode, md in sorted(agg["modes"].items(), key=lambda kv: kv[1]["n"], reverse=True):
+        if md["n"] < META_MODE_MIN_BATTLES: continue
+        mrows = rank_rows(md["b"], max(8, md["n"] // 40))
+        if len(mrows) >= 3: modes.append(f"• <b>{esc(mode_name(mode))}</b>: " + ", ".join(esc(r[0]) for r in mrows[:3]))
+    analysis = meta_analysis(agg, rows, prev, classes, deltas)
+    why = ["💡 <b>Разбор</b>"] + [f"• {esc(a)}" for a in analysis] if analysis else []
+    foot = ("<i>Это мета лучших игроков мира; на средних кубках расклад может отличаться. "
+            "Разница в 1–2 п.п. в пределах погрешности.</i>\n\n#BrawlStars #мета")
+    sections = [top, popular, movers, why, modes]
+    while True:
+        body = "\n\n".join("\n".join(sec) for sec in sections if sec)
+        text = head + "\n\n" + body + "\n\n" + foot
+        if len(text) <= limit or not sections: return text
+        sections.pop()
+
+def load_classes(state):
+    c = state.get("classes") or {}
+    if c.get("map") and time.time() - c.get("ts", 0) < 7 * 86400:
+        return c["map"], c.get("images", {})
+    try:
+        data = json.loads(get("https://api.brawlapi.com/v1/brawlers"))
+        mapping = {}
+        images = {}
+        for b in data.get("list", []):
+            cls = (b.get("class") or {}).get("name")
+            img = b.get("imageUrl2") or b.get("imageUrl")
+            if b.get("name"):
+                if cls: mapping[b["name"].upper()] = cls
+                if img: images[b["name"].upper()] = img
+        if mapping:
+            state["classes"] = {"ts": time.time(), "map": mapping, "images": images}
+            return mapping, images
+    except Exception as ex: pass
+    return c.get("map") or {}, c.get("images", {})
+
+def collect_meta(deadline, now=None):
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    players = bs_api(f"/rankings/global/players?limit={META_PLAYERS}").get("items", [])
+    tags = [p["tag"] for p in players if p.get("tag")]
+    auth_fail = []
+    def one(tag):
+        if time.time() > deadline: return None
+        try: return bs_api("/players/" + urllib.parse.quote(tag, safe="") + "/battlelog").get("items", [])
+        except urllib.error.HTTPError as ex:
+            if ex.code in (401, 403): auth_fail.append(ex.code)
+            return None
+        except Exception: return None
+    with ThreadPoolExecutor(max_workers=8) as pool: results = list(pool.map(one, tags))
+    if auth_fail: raise PermissionError("API отклонил ключ")
+    logs = {t: r for t, r in zip(tags, results) if r is not None}
+    agg = aggregate(logs, now)
+    if agg["battles"] < 150: agg = aggregate(logs, now, types=None)
+    return agg, len(logs), len(tags)
+
+def maybe_post_meta(state, started, force=False):
+    if not BS_KEY: return False
+    now = datetime.datetime.now(datetime.timezone.utc)
+    today = now.strftime("%Y-%m-%d")
+    if not force:
+        if state.get("meta_posted") == today or now.hour < META_HOUR_UTC: return False
+        if time.time() - state.get("meta_try", 0) < META_RETRY_MIN * 60: return False
+        if time.time() - started > 330: return False
+    state["meta_try"] = time.time()
+    try: agg, ok, total = collect_meta(time.time() + 150, now)
+    except PermissionError: return False
+    except Exception: return False
+    if total == 0 or ok < total * 0.6 or agg["battles"] < 150: return False
+    try: register_names(n for n in agg["stats"])
+    except Exception: pass
+    classes, images = load_classes(state)
+    prev = state.get("meta") or {}
+    if prev.get("date"):
+        try:
+            age = (now.date() - datetime.date.fromisoformat(prev["date"])).days
+            if age > 4: prev = {}
+        except Exception: prev = {}
+    
+    rows = rank_rows(agg["stats"], META_MIN_PICKS)
+    text = build_meta_post(agg, prev, classes)
+    if not text: return False
+        
+    img_bytes = generate_meta_image(rows, images)
+    
+    if img_bytes:
+        short_text = build_meta_post(agg, prev, classes, limit=900)
+        try:
+            tg_upload(img_bytes, short_text)
+            if len(text) > 1024:
+                tg_json("sendMessage", {"chat_id": CHAT, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True})
+        except Excepti
