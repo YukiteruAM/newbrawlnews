@@ -243,7 +243,6 @@ def is_dup(keys, toks, important, recent, now=None):
         common = len(toks & rt)
         if (common >= 3 and common / min(len(toks), len(rt)) >= 0.6) or (len(toks) >= 2 and toks == rt): return True
     return False
-
 def ctext(e, *tags):
     for tag in tags:
         n = e.find(tag)
@@ -428,8 +427,37 @@ def generate_guide_image(b, gadget_name, sp_name):
         img_url = b.get("imageUrl2") or b.get("imageUrl")
         if img_url:
             try:
-                b_img = Image.open(io.BytesIO(download(img_url))).conv
-def generate_meta_image(rows, images):
+                b_img = Image.open(io.BytesIO(download(img_url))).convert("RGBA")
+                b_img.thumbnail((650, 650))
+                bg.paste(b_img, (430, 350), b_img)
+            except Exception: pass
+
+        draw.text((60, 750), "РЕКОМЕНДУЕМЫЙ БИЛД", font=font_label, fill="#ffcc00", stroke_width=2, stroke_fill="black")
+        draw.rounded_rectangle([(60, 800), (170, 910)], radius=15, outline="#ffcc00", width=5)
+        draw.rounded_rectangle([(60, 930), (170, 1040)], radius=15, outline="#ffcc00", width=5)
+        
+        if b.get("gadgets"):
+            try:
+                g_img = Image.open(io.BytesIO(download(f"https://cdn.brawlify.com/gadgets/{b['gadgets'][0]['id']}.png"))).convert("RGBA")
+                g_img.thumbnail((90, 90))
+                bg.paste(g_img, (70, 810), g_img)
+            except: pass
+        if b.get("starPowers"):
+            try:
+                s_img = Image.open(io.BytesIO(download(f"https://cdn.brawlify.com/star-powers/{b['starPowers'][0]['id']}.png"))).convert("RGBA")
+                s_img.thumbnail((90, 90))
+                bg.paste(s_img, (70, 940), s_img)
+            except: pass
+
+        draw.text((200, 830), gadget_name, font=font_desc, fill="white", stroke_width=2, stroke_fill="black")
+        draw.text((200, 960), sp_name, font=font_desc, fill="white", stroke_width=2, stroke_fill="black")
+
+        out = io.BytesIO()
+        bg.convert("RGB").save(out, format="JPEG", quality=95)
+        return out.getvalue()
+    except Exception as e:
+        return b""
+ def generate_meta_image(rows, images):
     try:
         bg = get_base_image()
         draw = ImageDraw.Draw(bg)
@@ -854,4 +882,94 @@ def maybe_post_meta(state, started, force=False):
             tg_upload(img_bytes, short_text)
             if len(text) > 1024:
                 tg_json("sendMessage", {"chat_id": CHAT, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True})
-        except Excepti                  
+        except Exception:
+            tg_json("sendMessage", {"chat_id": CHAT, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True})
+    else:
+        tg_json("sendMessage", {"chat_id": CHAT, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True})
+        
+    state["meta"] = {"date": today, "stats": agg["stats"], "battles": agg["battles"]}
+    state["meta_posted"] = today
+    return True
+
+def load_state():
+    state = {"seen": [], "sources": [], "daily": {}, "yt": {}, "recent": [], "fails": {}, "phrases": [],
+             "meta": {}, "meta_posted": "", "meta_try": 0, "classes": {}, "posted_guides": []}
+    if os.path.exists(STATE_FILE):
+        try:
+            data = json.load(open(STATE_FILE))
+            if isinstance(data, dict): state.update(data)
+        except Exception: pass
+    return state
+
+def save_state(state):
+    state["seen"] = state["seen"][-SEEN_KEEP:]
+    tmp = STATE_FILE + ".tmp"
+    with open(tmp, "w") as f: json.dump(state, f, ensure_ascii=False)
+    os.replace(tmp, STATE_FILE)
+
+def main():
+    started = time.time()
+    if not TOKEN or not CHAT: sys.exit(1)
+    try: check_telegram()
+    except FatalError: sys.exit(1)
+    
+    state = load_state()
+    seen = set(state["seen"])
+    fails = state["fails"]
+    today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+    if state["daily"].get("date") != today:
+        state["daily"] = {"date": today, "regular": 0, "guides": 0}
+
+    def mark(item_id):
+        fails.pop(item_id, None)
+        if item_id not in seen:
+            seen.add(item_id)
+            state["seen"].append(item_id)
+
+    results = fetch_all(SOURCES, state)
+    queue = []
+    for src in SOURCES:
+        key = src["name"]
+        items = results.get(key)
+        if not items: continue
+        if key not in state["sources"]:
+            for it in items: mark(it["id"])
+            state["sources"].append(key)
+            continue
+        for it in items:
+            if it["id"] not in seen: queue.append((it, src["important"], key))
+
+    queue.sort(key=lambda x: not x[1])
+    sent = 0
+    for it, important, key in queue:
+        if sent >= MAX_PER_RUN or time.time() - started > TIME_BUDGET: break
+        if not important and state["daily"]["regular"] >= DAILY_REGULAR_LIMIT:
+            mark(it["id"]); continue
+        
+        if key == "brawlify-guides" and state["daily"].get("guides", 0) >= 1:
+            mark(it["id"]); continue
+
+        try:
+            phrase = pick_phrase(it)
+            send(it, important, phrase)
+        except Exception as ex:
+            print("Ошибка отправки:", ex); continue
+
+        mark(it["id"])
+        sent += 1
+        if key == "brawlify-guides":
+            state["daily"]["guides"] = state["daily"].get("guides", 0) + 1
+        elif not important:
+            state["daily"]["regular"] += 1
+        save_state(state)
+        time.sleep(PAUSE)
+
+    try: maybe_post_meta(state, started, force=FORCE_META)
+    except Exception as ex: pass
+
+    save_state(state)
+    print(f"готово: опубликовано {sent}")
+
+if __name__ == "__main__":
+    main()
+ 
