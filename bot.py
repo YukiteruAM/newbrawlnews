@@ -429,7 +429,7 @@ def generate_guide_image(b, gadget_name, sp_name):
         if img_url:
             try:
                 b_img = Image.open(io.BytesIO(download(img_url))).conv
-                  def generate_meta_image(rows, images):
+def generate_meta_image(rows, images):
     try:
         bg = get_base_image()
         draw = ImageDraw.Draw(bg)
@@ -854,4 +854,4 @@ def maybe_post_meta(state, started, force=False):
             tg_upload(img_bytes, short_text)
             if len(text) > 1024:
                 tg_json("sendMessage", {"chat_id": CHAT, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True})
-        except Excepti
+        except Excepti                  
