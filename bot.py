@@ -655,7 +655,7 @@ def send(item, important, phrase=""):
         try:
             tg_upload(item["img_bytes"], post)
             return
-        except Exception as ex: pass
+        except Exception as ex: print(f"  [ОШИБКА TG] Фото с текстом не ушло: {ex}")
             
     img = item.get("img", "")
     if img:
@@ -664,9 +664,12 @@ def send(item, important, phrase=""):
             if len(img_data) > 15000:
                 tg_upload(img_data, post)
                 return
-        except Exception: pass
+        except Exception as ex: print(f"  [ОШИБКА TG] Картинка не ушла: {ex}")
 
-    tg_json("sendMessage", {"chat_id": CHAT, "text": post, "parse_mode": "HTML"})
+    try:
+        tg_json("sendMessage", {"chat_id": CHAT, "text": post, "parse_mode": "HTML"})
+    except Exception as ex:
+        print(f"  [ОШИБКА TG] Текст не ушел: {ex}")
 
 BS_BASE = os.environ.get("BS_API_BASE", "https://bsproxy.royaleapi.dev/v1")
 BS_KEY = os.environ.get("BRAWL_API_KEY", "")
@@ -848,31 +851,49 @@ def collect_meta(deadline, now=None):
     return agg, len(logs), len(tags)
 
 def maybe_post_meta(state, started, force=False):
-    if not BS_KEY: return False
+    if not BS_KEY: 
+        print("  [МЕТА] Отключена: нет BRAWL_API_KEY")
+        return False
     now = datetime.datetime.now(datetime.timezone.utc)
     today = now.strftime("%Y-%m-%d")
+    
     if not force:
-        if state.get("meta_posted") == today or now.hour < META_HOUR_UTC: return False
-        if time.time() - state.get("meta_try", 0) < META_RETRY_MIN * 60: return False
-        if time.time() - started > 330: return False
+        if state.get("meta_posted") == today: 
+            print("  [МЕТА] Уже постили сегодня (пропуск)")
+            return False
+        if now.hour < META_HOUR_UTC: 
+            print("  [МЕТА] Еще рано (ждем 10:00 МСК)")
+            return False
+        if time.time() - started > 330: 
+            print("  [МЕТА] Нет времени")
+            return False
+            
     state["meta_try"] = time.time()
-    try: agg, ok, total = collect_meta(time.time() + 150, now)
-    except PermissionError: return False
-    except Exception: return False
-    if total == 0 or ok < total * 0.6 or agg["battles"] < 150: return False
+    try: 
+        agg, ok, total = collect_meta(time.time() + 150, now)
+    except PermissionError: 
+        print("  [МЕТА] API отклонил ключ (проверь IP 45.79.218.79)")
+        return False
+    except Exception as ex: 
+        print(f"  [МЕТА] Ошибка сбора данных: {ex}")
+        return False
+        
+    if total == 0 or ok < total * 0.6 or agg["battles"] < 150: 
+        print(f"  [МЕТА] Мало данных (журналов {ok}/{total}, боёв {agg['battles']})")
+        return False
+        
     try: register_names(n for n in agg["stats"])
     except Exception: pass
+    
     classes, images = load_classes(state)
     prev = state.get("meta") or {}
-    if prev.get("date"):
-        try:
-            age = (now.date() - datetime.date.fromisoformat(prev["date"])).days
-            if age > 4: prev = {}
-        except Exception: prev = {}
     
     rows = rank_rows(agg["stats"], META_MIN_PICKS)
     text = build_meta_post(agg, prev, classes)
-    if not text: return False
+    
+    if not text: 
+        print("  [МЕТА] Слишком мало бойцов в рейтинге для поста")
+        return False
         
     img_bytes = generate_meta_image(rows, images)
     
@@ -882,9 +903,12 @@ def maybe_post_meta(state, started, force=False):
             tg_upload(img_bytes, short_text)
             if len(text) > 1024:
                 tg_json("sendMessage", {"chat_id": CHAT, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True})
-        except Exception:
+            print("  [МЕТА] Успешно опубликована с картинкой!")
+        except Exception as ex:
+            print(f"  [МЕТА] Ошибка отправки картинки: {ex}. Пробую текстом...")
             tg_json("sendMessage", {"chat_id": CHAT, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True})
     else:
+        print("  [МЕТА] Картинка не сгенерировалась, шлю текст.")
         tg_json("sendMessage", {"chat_id": CHAT, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True})
         
     state["meta"] = {"date": today, "stats": agg["stats"], "battles": agg["battles"]}
@@ -909,28 +933,4 @@ def save_state(state):
 
 def main():
     started = time.time()
-    if not TOKEN or not CHAT: sys.exit(1)
-    try: check_telegram()
-    except FatalError: sys.exit(1)
-    
-    state = load_state()
-    seen = set(state["seen"])
-    fails = state["fails"]
-    today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
-    if state["daily"].get("date") != today:
-        state["daily"] = {"date": today, "regular": 0, "guides": 0}
-
-    def mark(item_id):
-        fails.pop(item_id, None)
-        if item_id not in seen:
-            seen.add(item_id)
-            state["seen"].append(item_id)
-
-    results = fetch_all(SOURCES, state)
-    queue = []
-    for src in SOURCES:
-        key = src["name"]
-        items = results.get(key)
-        if not items: continue
-        if key not in state["sources"]:
-            for it in items: mark(it["id"])
+    if
