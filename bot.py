@@ -937,4 +937,71 @@ def main():
     
     state = load_state()
     seen = set(state["seen"])
-    fails = state["fails"]
+        fails = state["fails"]
+    today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+    if state["daily"].get("date") != today:
+        state["daily"] = {"date": today, "regular": 0, "guides": 0}
+
+    def mark(item_id):
+        fails.pop(item_id, None)
+        if item_id not in seen:
+            seen.add(item_id)
+            state["seen"].append(item_id)
+
+    print("1. Начинаю собирать новости из источников...")
+    results = fetch_all(SOURCES, state)
+    queue = []
+    for src in SOURCES:
+        key = src["name"]
+        items = results.get(key)
+        if not items: continue
+        if key not in state["sources"]:
+            for it in items: mark(it["id"])
+            state["sources"].append(key)
+            continue
+        for it in items:
+            if it["id"] not in seen: queue.append((it, src["important"], key))
+
+    print(f"2. Найдено новых записей в очереди: {len(queue)}")
+    queue.sort(key=lambda x: not x[1])
+    
+    sent = 0
+    for it, important, key in queue:
+        if sent >= MAX_PER_RUN or time.time() - started > TIME_BUDGET: 
+            break
+        if not important and state["daily"]["regular"] >= DAILY_REGULAR_LIMIT:
+            mark(it["id"])
+            continue
+        
+        if key == "brawlify-guides" and state["daily"].get("guides", 0) >= 1 and not FORCE_META:
+            mark(it["id"])
+            continue
+
+        try:
+            phrase = pick_phrase(it)
+            send(it, important, phrase)
+            print(f"   -> Опубликовано: {it.get('title')}")
+        except Exception as ex:
+            print(f"   [ОШИБКА] Не удалось отправить {it.get('title')}: {ex}")
+            continue
+
+        mark(it["id"])
+        sent += 1
+        if key == "brawlify-guides":
+            state["daily"]["guides"] = state["daily"].get("guides", 0) + 1
+        elif not important:
+            state["daily"]["regular"] += 1
+        save_state(state)
+        time.sleep(PAUSE)
+
+    print("3. Проверяю, нужно ли постить мету...")
+    try: 
+        maybe_post_meta(state, started, force=FORCE_META)
+    except Exception as ex: 
+        print(f"  [ОШИБКА МЕТЫ] {ex}")
+
+    save_state(state)
+    print(f"4. Работа завершена. Всего постов: {sent}")
+
+if __name__ == "__main__":
+    main()
