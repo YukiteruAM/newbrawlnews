@@ -457,7 +457,8 @@ def generate_guide_image(b, gadget_name, sp_name):
         return out.getvalue()
     except Exception as e:
         return b""
- def generate_meta_image(rows, images):
+
+def generate_meta_image(rows, images):
     try:
         bg = get_base_image()
         draw = ImageDraw.Draw(bg)
@@ -472,7 +473,9 @@ def generate_guide_image(b, gadget_name, sp_name):
 
         draw.text((250, 160), "МЕТА BRAWL STARS", font=font_title, fill="#ffcc00", stroke_width=3, stroke_fill="black")
 
-        def draw_tier(y, letter, color, brawlers):
+        tiers = [(280, "S", "#cc0044", rows[:4]), (480, "A", "#cc6600", rows[4:8]), (680, "B", "#ccaa00", rows[8:12])]
+        
+        for y, letter, color, brawlers in tiers:
             draw.rounded_rectangle([(60, y), (1020, y+180)], radius=20, fill=color)
             draw.text((90, y+30), letter, font=font_tier, fill="white", stroke_width=4, stroke_fill="black")
             
@@ -487,10 +490,6 @@ def generate_guide_image(b, gadget_name, sp_name):
                     draw.text((x_offset+20, y+140), f"{pct(wr)}", font=font_pct, fill="white", stroke_width=2, stroke_fill="black")
                 except: pass
                 x_offset += 170
-
-        draw_tier(280, "S", "#cc0044", rows[:4])
-        draw_tier(480, "A", "#cc6600", rows[4:8])
-        draw_tier(680, "B", "#ccaa00", rows[8:12])
 
         out = io.BytesIO()
         bg.convert("RGB").save(out, format="JPEG", quality=95)
@@ -560,7 +559,6 @@ def fetch_all(sources, state):
             try: out[s["name"]] = futs[s["name"]].result(timeout=120)
             except Exception as ex: out[s["name"]] = None
     return out
-
 def _fatal_check(ex):
     if ex.code in (401, 403): raise FatalError("Telegram отказал.")
 
@@ -972,4 +970,3 @@ def main():
 
 if __name__ == "__main__":
     main()
- 
