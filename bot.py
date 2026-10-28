@@ -408,57 +408,72 @@ def generate_guide_image(b, gadget_name, sp_name):
         bg = get_base_image()
         draw = ImageDraw.Draw(bg)
         
+        # Скачиваем шрифт с поддержкой кириллицы (Roboto), если его нет
+        font_ru_path = "Roboto-Bold.ttf"
+        if not os.path.exists(font_ru_path):
+            try:
+                font_url = "https://github.com/google/fonts/raw/main/apache/roboto/Roboto-Bold.ttf"
+                with open(font_ru_path, "wb") as f: f.write(download(font_url))
+            except Exception: pass
+
         font_path = "LilitaOne-Regular.ttf"
         try:
-            font_name = ImageFont.truetype(font_path, 120)
-            font_class = ImageFont.truetype(font_path, 50)
-            font_label = ImageFont.truetype(font_path, 35)
-            font_desc = ImageFont.truetype(font_path, 40)
+            font_name = ImageFont.truetype(font_path, 120) # Для ника (Английский)
+            font_ru_big = ImageFont.truetype(font_ru_path, 40) # Для русского
+            font_ru_small = ImageFont.truetype(font_ru_path, 30)
         except:
-            font_name = font_class = font_label = font_desc = ImageFont.load_default()
+            font_name = font_ru_big = font_ru_small = ImageFont.load_default()
 
-        draw.text((60, 230), "ГАЙД НА БОЙЦА", font=font_label, fill="#ffcc00", stroke_width=2, stroke_fill="black")
-        draw.text((60, 270), b['name'].upper(), font=font_name, fill="white", stroke_width=5, stroke_fill="black")
+        # Текст слева
+        draw.text((60, 230), "ГАЙД НА БОЙЦА", font=font_ru_big, fill="#ffcc00", stroke_width=2, stroke_fill="black")
+        draw.text((60, 280), b['name'].upper(), font=font_name, fill="white", stroke_width=5, stroke_fill="black")
         
         role = (b.get("class") or {}).get("name", "Боец")
-        draw.text((65, 410), f"Класс: {role}", font=font_class, fill="#ffcc00", stroke_width=2, stroke_fill="black")
+        draw.text((65, 420), f"Класс: {role}", font=font_ru_big, fill="#ffcc00", stroke_width=2, stroke_fill="black")
 
+        # Картинка бойца (справа, большая)
         img_url = b.get("imageUrl")
         if img_url:
             try:
                 b_img = Image.open(io.BytesIO(download(img_url))).convert("RGBA")
-                b_img.thumbnail((700, 700))
-                bg.paste(b_img, (400, 320), b_img)
+                b_img.thumbnail((700, 700)) # Огромный размер
+                bg.paste(b_img, (450, 300), b_img) # Сдвинули вправо и вниз
             except Exception: pass
 
-        draw.text((60, 750), "РЕКОМЕНДУЕМЫЙ БИЛД", font=font_label, fill="#ffcc00", stroke_width=2, stroke_fill="black")
-        draw.rounded_rectangle([(60, 800), (170, 910)], radius=15, outline="#ffcc00", width=5)
-        draw.rounded_rectangle([(60, 930), (170, 1040)], radius=15, outline="#ffcc00", width=5)
+        # Плашка для билдов внизу
+        draw.rounded_rectangle([(50, 720), (1030, 1030)], radius=20, fill=(0, 0, 0, 100))
+        draw.text((70, 740), "РЕКОМЕНДУЕМЫЙ БИЛД", font=font_ru_big, fill="#ffcc00", stroke_width=2, stroke_fill="black")
+        
+        # Рамки для иконок
+        draw.rounded_rectangle([(70, 810), (190, 930)], radius=15, outline="#ffcc00", width=5)
+        draw.rounded_rectangle([(70, 950), (190, 1070)], radius=15, outline="#ffcc00", width=5)
         
         if b.get("gadgets"):
             try:
                 g_url = b['gadgets'][0].get('imageUrl')
                 if g_url:
                     g_img = Image.open(io.BytesIO(download(g_url))).convert("RGBA")
-                    g_img.thumbnail((90, 90))
-                    bg.paste(g_img, (70, 810), g_img)
+                    g_img.thumbnail((100, 100))
+                    bg.paste(g_img, (80, 820), g_img)
             except Exception: pass
         if b.get("starPowers"):
             try:
                 sp_url = b['starPowers'][0].get('imageUrl')
                 if sp_url:
                     s_img = Image.open(io.BytesIO(download(sp_url))).convert("RGBA")
-                    s_img.thumbnail((90, 90))
-                    bg.paste(s_img, (70, 940), s_img)
+                    s_img.thumbnail((100, 100))
+                    bg.paste(s_img, (80, 960), s_img)
             except Exception: pass
 
-        draw.text((200, 830), gadget_name, font=font_desc, fill="white", stroke_width=2, stroke_fill="black")
-        draw.text((200, 960), sp_name, font=font_desc, fill="white", stroke_width=2, stroke_fill="black")
+        # Текст возле иконок
+        draw.text((220, 850), gadget_name, font=font_ru_big, fill="white", stroke_width=2, stroke_fill="black")
+        draw.text((220, 990), sp_name, font=font_ru_big, fill="white", stroke_width=2, stroke_fill="black")
 
         out = io.BytesIO()
         bg.convert("RGB").save(out, format="JPEG", quality=95)
         return out.getvalue()
     except Exception as e:
+        print("Ошибка генерации гайда:", e)
         return b""
 
 def generate_meta_image(rows, images):
