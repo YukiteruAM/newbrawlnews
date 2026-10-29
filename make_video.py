@@ -1,4 +1,4 @@
-import os, sys, re, asyncio
+import os, sys, re, asyncio, time
 import edge_tts
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 import numpy as np
@@ -11,7 +11,7 @@ FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 MUSIC_IDX_FILE = "music_idx.txt"
 
 async def _generate_voice_async(text, out_file):
-    # Дмитрий - энергичный мужской голос (есть еще Svetlana - женский)
+    # Дмитрий - живой, энергичный мужской голос
     voice = "ru-RU-DmitryNeural" 
     communicate = edge_tts.Communicate(text, voice)
     await communicate.save(out_file)
@@ -19,14 +19,13 @@ async def _generate_voice_async(text, out_file):
 def generate_voice(text, out_file="voice.mp3"):
     print("Генерирую голос через Microsoft Edge TTS...")
     
-    # ЖЕСТКАЯ ОЧИСТКА: убираем всё, кроме букв, цифр и базовой пунктуации
-    # (эмодзи и спецсимволы часто ломают запрос к Microsoft)
+    # Жесткая очистка текста от эмодзи и спецсимволов
     clean_text = re.sub(r'[^а-яА-ЯёЁa-zA-Z0-9\s.,!?]', '', text)
     clean_text = clean_text.replace('...', '.').replace('..', '.')
     if not clean_text.strip():
         clean_text = "Привет, это тест."
 
-    # Пробуем 3 раза, если Microsoft блокирует соединение
+    # Пробуем 3 раза, если сервера Microsoft тупят
     for attempt in range(3):
         try:
             asyncio.run(_generate_voice_async(clean_text, out_file))
@@ -35,13 +34,13 @@ def generate_voice(text, out_file="voice.mp3"):
                 return
         except Exception as e:
             print(f"Попытка {attempt + 1} не удалась: {e}")
-            import time
             time.sleep(2)
             
-    print("КРИТИЧЕСКАЯ ОШИБКА: Не удалось получить голос от Microsoft.")
+    print("КРИТИЧЕСКАЯ ОШИБКА: Не удалось получить голос.")
     sys.exit(1)
 
 def get_base_bg():
+    # Генерируем стильный темный фон с неоновыми пятнами
     bg = Image.new('RGBA', (W, H), (10, 5, 20, 255))
     colors = [(130, 0, 255), (0, 100, 255), (255, 0, 150)]
     for _ in range(4):
@@ -59,19 +58,33 @@ def create_video(text, title, img_path, brawler_path, out_path="result.mp4"):
     print("Готовлю картинки...")
     bg_img = get_base_bg()
     draw = ImageDraw.Draw(bg_img)
+    
+    # АВТОПОДГОНКА РАЗМЕРА ШРИФТА ДЛЯ ЗАГОЛОВКА
+    font_size = 110
     try:
-        font_title = ImageFont.truetype(FONT_PATH, 110)
+        font_title = ImageFont.truetype(FONT_PATH, font_size)
+        bbox = draw.textbbox((0, 0), title, font=font_title)
+        text_width = bbox[2] - bbox[0]
+        
+        # Уменьшаем шрифт, пока текст не влезет в экран
+        while text_width > (W - 100) and font_size > 40:
+            font_size -= 10
+            font_title = ImageFont.truetype(FONT_PATH, font_size)
+            bbox = draw.textbbox((0, 0), title, font=font_title)
+            text_width = bbox[2] - bbox[0]
     except:
         font_title = ImageFont.load_default()
         
     draw.text((W/2, 200), title, font=font_title, fill="#ffcc00", anchor="mm", stroke_width=6, stroke_fill="black")
     bg_img.convert("RGB").save("bg_temp.png")
     
+    # Если передана карточка меты/гайда
     if os.path.exists(img_path):
         meta_img = Image.open(img_path).convert("RGBA")
         meta_img.thumbnail((900, 900), Image.Resampling.LANCZOS)
         meta_img.save("meta_temp.png")
 
+    # Если передан боец-диктор
     if os.path.exists(brawler_path):
         brawler_img = Image.open(brawler_path).convert("RGBA")
         brawler_img.thumbnail((450, 450), Image.Resampling.LANCZOS)
@@ -81,6 +94,7 @@ def create_video(text, title, img_path, brawler_path, out_path="result.mp4"):
     clip_bg = ImageClip("bg_temp.png").with_duration(15)
     clips = [clip_bg]
     
+    # Накладываем карточку с легкой пульсацией
     if os.path.exists("meta_temp.png"):
         clip_meta = (ImageClip("meta_temp.png")
                      .with_duration(15)
@@ -89,6 +103,7 @@ def create_video(text, title, img_path, brawler_path, out_path="result.mp4"):
                      .resized(lambda t: 1 + 0.05*np.sin(t*2)))
         clips.append(clip_meta)
     
+    # Накладываем бойца (пульсирует быстрее, как будто говорит)
     if os.path.exists("brawler_temp.png"):
         clip_brawler = (ImageClip("brawler_temp.png")
                         .with_duration(15)
@@ -105,6 +120,7 @@ def create_video(text, title, img_path, brawler_path, out_path="result.mp4"):
     clip_voice = clip_voice.with_start(0)
     clips_audio = [clip_voice]
     
+    # МУЗЫКА ПО ОЧЕРЕДИ
     music_dir = "music"
     if os.path.exists(music_dir) and os.path.isdir(music_dir):
         tracks = sorted([f for f in os.listdir(music_dir) if f.endswith(".mp3")])
@@ -142,5 +158,5 @@ def create_video(text, title, img_path, brawler_path, out_path="result.mp4"):
     return out_path
 
 if __name__ == "__main__":
-    test_text = "Привет! Это тест нового живого голоса от Microsoft. Слышишь, как четко и энергично я звучал? Теперь ролики будут залетать в рекомендации!"
+    test_text = "Привет! Это тест нового живого голоса. Слышишь, как четко я звучал? Теперь ролики будут залетать в рекомендации!"
     create_video(test_text, "ТЕСТ ЖИВОГО ГОЛОСА", "meta_temp.png", "brawler_temp.png")
