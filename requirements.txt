@@ -3,4 +3,3 @@ numpy
 moviepy
 imageio
 imageio-ffmpeg
-edge-tts
