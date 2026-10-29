@@ -2,5 +2,5 @@ Pillow
 moviepy
 numpy
 imageio-ffmpeg
-torch
-torchaudio
+torch --index-url https://download.pytorch.org/whl/cpu
+torchaudio --index-url https://download.pytorch.org/whl/cpu
