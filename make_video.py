@@ -1,17 +1,52 @@
-import os, sys, asyncio, edge_tts, io
+import os, sys, re
+import torch
+import torchaudio
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 import numpy as np
 from moviepy import *
 import moviepy.video.fx as vfx
 
+# Настройки видео
 W, H = 1080, 1920
 FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 MUSIC_IDX_FILE = "music_idx.txt"
 
-async def generate_voice(text, out_file="voice.mp3"):
-    voice = "ru-RU-DmitryNeural" 
-    communicate = edge_tts.Communicate(text, voice)
-    await communicate.save(out_file)
+# 1. Инициализация нейросети Silero TTS
+print("Загрузка модели Silero TTS (это может занять минуту при первом запуске)...")
+try:
+    model, _ = torch.hub.load(repo_or_dir='snakers4/silero-models', model='silero_tts', language='ru', speaker='v5_ru')
+    model.to('cpu')
+    print("Модель успешно загружена!")
+except Exception as e:
+    print("КРИТИЧЕСКАЯ ОШИБКА при загрузке Silero:", e)
+    sys.exit(1)
+
+def generate_voice(text, out_file="voice.mp3"):
+    print("Генерирую голос...")
+    # Очищаем текст от спецсимволов и эмодзи
+    clean_text = re.sub(r'[^\w\s.,!?]', '', text)
+    if not clean_text.strip():
+        clean_text = "Привет, это тест."
+        
+    speaker = 'aidar' # Мужской голос
+    sample_rate = 48000
+    
+    # Генерация аудио-тензора
+    audio = model.apply_tts(text=clean_text, speaker=speaker, sample_rate=sample_rate)
+    
+    # Сохраняем во временный WAV
+    temp_wav = "voice_temp.wav"
+    torchaudio.save(temp_wav, audio.unsqueeze(0), sample_rate)
+    
+    # Конвертируем в MP3 через MoviePy (чтобы дальше было проще склеивать)
+    clip = AudioFileClip(temp_wav)
+    clip.write_audiofile(out_file, codec='mp3', logger=None)
+    clip.close()
+    
+    # Удаляем временный файл
+    if os.path.exists(temp_wav):
+        os.remove(temp_wav)
+    print("Голос готов!")
 
 def get_base_bg():
     bg = Image.new('RGBA', (W, H), (10, 5, 20, 255))
@@ -26,10 +61,9 @@ def get_base_bg():
     return bg
 
 def create_video(text, title, img_path, brawler_path, out_path="result.mp4"):
-    print("1. Генерирую голос...")
-    asyncio.run(generate_voice(text, "voice.mp3"))
+    generate_voice(text, "voice.mp3")
     
-    print("2. Готовлю картинки...")
+    print("Готовлю картинки...")
     bg_img = get_base_bg()
     draw = ImageDraw.Draw(bg_img)
     try:
@@ -50,8 +84,7 @@ def create_video(text, title, img_path, brawler_path, out_path="result.mp4"):
         brawler_img.thumbnail((450, 450), Image.Resampling.LANCZOS)
         brawler_img.save("brawler_temp.png")
 
-    print("3. Собираю видео...")
-    # Новый синтаксис MoviePy 2.0
+    print("Собираю видео...")
     clip_bg = ImageClip("bg_temp.png").with_duration(15)
     clips = [clip_bg]
     
@@ -79,7 +112,7 @@ def create_video(text, title, img_path, brawler_path, out_path="result.mp4"):
     clip_voice = clip_voice.with_start(0)
     clips_audio = [clip_voice]
     
-    # --- МУЗЫКА ПО ОЧЕРЕДИ ---
+    # Музыка по очереди
     music_dir = "music"
     if os.path.exists(music_dir) and os.path.isdir(music_dir):
         tracks = sorted([f for f in os.listdir(music_dir) if f.endswith(".mp3")])
@@ -95,7 +128,7 @@ def create_video(text, title, img_path, brawler_path, out_path="result.mp4"):
             
             track_name = tracks[idx % len(tracks)]
             chosen_track = os.path.join(music_dir, track_name)
-            print(f"Выбрана музыка (по очереди): {chosen_track}")
+            print(f"Выбрана музыка: {chosen_track}")
             
             with open(MUSIC_IDX_FILE, "w") as f:
                 f.write(str((idx + 1) % len(tracks)))
@@ -109,14 +142,13 @@ def create_video(text, title, img_path, brawler_path, out_path="result.mp4"):
         else:
             print("Музыка не найдена в папке music/")
 
-    # Новый синтаксис для композиции
     final = CompositeVideoClip(clips, size=(W, H))
     final = final.with_audio(CompositeAudioClip(clips_audio))
     
-    final.write_videofile(out_path, fps=24, codec="libx264", audio_codec="aac", threads=4)
-    print("4. Видео готово:", out_path)
+    final.write_videofile(out_path, fps=24, codec="libx264", audio_codec="aac", threads=4, logger=None)
+    print("Видео готово:", out_path)
     return out_path
 
 if __name__ == "__main__":
-    test_text = "Привет, это тест нейросетевого диктора. Теперь музыка будет меняться строго по очереди."
-    create_video(test_text, "ТЕСТ МУЗЫКИ", "meta_temp.png", "brawler_temp.png")
+    test_text = "Привет, это тест нейросетевого диктора Silero. Никаких блокировок, только чистый звук. Смотрите, как я пульсирую."
+    create_video(test_text, "ТЕСТ ГОЛОСА", "meta_temp.png", "brawler_temp.png")
