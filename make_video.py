@@ -1,5 +1,6 @@
-import os, sys, re, asyncio, time
-import edge_tts
+import os, sys, re
+import urllib.request
+import urllib.parse
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 import numpy as np
 from moviepy import *
@@ -10,37 +11,32 @@ W, H = 1080, 1920
 FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 MUSIC_IDX_FILE = "music_idx.txt"
 
-async def _generate_voice_async(text, out_file):
-    # Дмитрий + ускорение на 15% и повышение тона для энергичности
-    voice = "ru-RU-DmitryNeural" 
-    communicate = edge_tts.Communicate(text, voice, rate="+15%", pitch="+5Hz")
-    await communicate.save(out_file)
-
 def generate_voice(text, out_file="voice.mp3"):
-    print("Генерирую голос через Microsoft Edge TTS...")
+    print("Генерирую голос через StreamElements (Yandex)...")
     
-    # Жесткая очистка текста от эмодзи и спецсимволов
-    clean_text = re.sub(r'[^а-яА-ЯёЁa-zA-Z0-9\s.,!?]', '', text)
-    clean_text = clean_text.replace('...', '.').replace('..', '.')
+    # Очищаем текст от эмодзи и спецсимволов, ограничиваем длину
+    clean_text = re.sub(r'[^\w\s.,!?]', '', text)
     if not clean_text.strip():
         clean_text = "Привет, это тест."
-
-    # Пробуем 3 раза, если сервера Microsoft тупят
-    for attempt in range(3):
-        try:
-            asyncio.run(_generate_voice_async(clean_text, out_file))
-            if os.path.exists(out_file) and os.path.getsize(out_file) > 1000:
-                print("Голос успешно сгенерирован!")
-                return
-        except Exception as e:
-            print(f"Попытка {attempt + 1} не удалась: {e}")
-            time.sleep(2)
-            
-    print("КРИТИЧЕСКАЯ ОШИБКА: Не удалось получить голос.")
-    sys.exit(1)
+        
+    # Filipp - энергичный мужской, Tatyana - женский
+    voice = "Filipp" 
+    
+    # Кодируем текст для URL
+    encoded_text = urllib.parse.quote(clean_text[:300]) # Ограничение API на длину
+    url = f"https://api.streamelements.com/kappa/v2/speech?voice={voice}&text={encoded_text}"
+    
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    
+    try:
+        with urllib.request.urlopen(req, timeout=20) as response, open(out_file, 'wb') as out_file_obj:
+            out_file_obj.write(response.read())
+        print("Голос успешно сгенерирован!")
+    except Exception as e:
+        print(f"КРИТИЧЕСКАЯ ОШИБКА генерации голоса: {e}")
+        sys.exit(1)
 
 def get_base_bg():
-    # Генерируем стильный темный фон с неоновыми пятнами
     bg = Image.new('RGBA', (W, H), (10, 5, 20, 255))
     colors = [(130, 0, 255), (0, 100, 255), (255, 0, 150)]
     for _ in range(4):
@@ -59,14 +55,12 @@ def create_video(text, title, img_path, brawler_path, out_path="result.mp4"):
     bg_img = get_base_bg()
     draw = ImageDraw.Draw(bg_img)
     
-    # АВТОПОДГОНКА РАЗМЕРА ШРИФТА ДЛЯ ЗАГОЛОВКА
+    # Автоподгонка шрифта
     font_size = 110
     try:
         font_title = ImageFont.truetype(FONT_PATH, font_size)
         bbox = draw.textbbox((0, 0), title, font=font_title)
         text_width = bbox[2] - bbox[0]
-        
-        # Уменьшаем шрифт, пока текст не влезет в экран
         while text_width > (W - 100) and font_size > 40:
             font_size -= 10
             font_title = ImageFont.truetype(FONT_PATH, font_size)
@@ -78,13 +72,11 @@ def create_video(text, title, img_path, brawler_path, out_path="result.mp4"):
     draw.text((W/2, 200), title, font=font_title, fill="#ffcc00", anchor="mm", stroke_width=6, stroke_fill="black")
     bg_img.convert("RGB").save("bg_temp.png")
     
-    # Если передана карточка меты/гайда
     if os.path.exists(img_path):
         meta_img = Image.open(img_path).convert("RGBA")
         meta_img.thumbnail((900, 900), Image.Resampling.LANCZOS)
         meta_img.save("meta_temp.png")
 
-    # Если передан боец-диктор
     if os.path.exists(brawler_path):
         brawler_img = Image.open(brawler_path).convert("RGBA")
         brawler_img.thumbnail((450, 450), Image.Resampling.LANCZOS)
@@ -94,7 +86,6 @@ def create_video(text, title, img_path, brawler_path, out_path="result.mp4"):
     clip_bg = ImageClip("bg_temp.png").with_duration(15)
     clips = [clip_bg]
     
-    # Накладываем карточку с легкой пульсацией
     if os.path.exists("meta_temp.png"):
         clip_meta = (ImageClip("meta_temp.png")
                      .with_duration(15)
@@ -103,7 +94,6 @@ def create_video(text, title, img_path, brawler_path, out_path="result.mp4"):
                      .resized(lambda t: 1 + 0.05*np.sin(t*2)))
         clips.append(clip_meta)
     
-    # Накладываем бойца (пульсирует быстрее, как будто говорит)
     if os.path.exists("brawler_temp.png"):
         clip_brawler = (ImageClip("brawler_temp.png")
                         .with_duration(15)
@@ -120,11 +110,10 @@ def create_video(text, title, img_path, brawler_path, out_path="result.mp4"):
     clip_voice = clip_voice.with_start(0)
     clips_audio = [clip_voice]
     
-    # МУЗЫКА ПО ОЧЕРЕДИ
+    # Музыка по очереди
     music_dir = "music"
     if os.path.exists(music_dir) and os.path.isdir(music_dir):
         tracks = sorted([f for f in os.listdir(music_dir) if f.endswith(".mp3")])
-        
         if tracks:
             idx = 0
             if os.path.exists(MUSIC_IDX_FILE):
@@ -147,8 +136,6 @@ def create_video(text, title, img_path, brawler_path, out_path="result.mp4"):
             else:
                 clip_bgm = clip_bgm.subclipped(0, duration)
             clips_audio.append(clip_bgm)
-        else:
-            print("Музыка не найдена в папке music/")
 
     final = CompositeVideoClip(clips, size=(W, H))
     final = final.with_audio(CompositeAudioClip(clips_audio))
@@ -158,5 +145,5 @@ def create_video(text, title, img_path, brawler_path, out_path="result.mp4"):
     return out_path
 
 if __name__ == "__main__":
-    test_text = "Привет! Это тест нового живого голоса. Слышишь, как четко я звучал? Теперь ролики будут залетать в рекомендации!"
-    create_video(test_text, "ТЕСТ ЖИВОГО ГОЛОСА", "meta_temp.png", "brawler_temp.png")
+    test_text = "Привет! Это тест нового энергичного голоса от Яндекс. Слышишь, как четко и бодро я звучал? Теперь ролики будут залетать в рекомендации!"
+    create_video(test_text, "ТЕСТ ЭНЕРГИЧНОГО ГОЛОСА", "meta_temp.png", "brawler_temp.png")
