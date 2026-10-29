@@ -1,6 +1,8 @@
 Pillow
-moviepy
 numpy
+moviepy
 imageio-ffmpeg
+omegaconf
+soundfile
 torch --index-url https://download.pytorch.org/whl/cpu
 torchaudio --index-url https://download.pytorch.org/whl/cpu
