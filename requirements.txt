@@ -1,5 +1,6 @@
 Pillow
 moviepy
-edge-tts
 numpy
 imageio-ffmpeg
+torch
+torchaudio
