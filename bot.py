@@ -1,6 +1,6 @@
 """Бот новостей Brawl Stars: собирает новости из первоисточников,
 переводит на русский и публикует в Telegram-канал. Дубли отсекаются."""
-import os, sys, re, io, json, html, time, uuid, datetime, random, math, struct
+import os, sys, re, io, json, html, time, uuid, datetime, random, math, struct, subprocess, importlib
 import urllib.request, urllib.parse, urllib.error
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
@@ -25,12 +25,13 @@ MAX_FAILS = 36                # сколько раз пробовать отп�
 FILL_FAILS = 5                # сколько раз пробовать загрузить статью Supercell
 # Картинки
 IMG_MAX_BYTES = 10 * 1024 * 1024   # лимит Telegram на фото
-IMG_MIN_SIDE_REGULAR = 480         # у постов сообщества короткая сторона не меньше (иначе картинка мыльная)
-IMG_MIN_PIXELS_REGULAR = 300_000
-IMG_MIN_SIDE_IMPORTANT = 300       # у официальных постов планка ниже; если не проходит, пост уходит без картинки
+IMG_MIN_SIDE_REGULAR = 360         # у постов сообщества короткая сторона не меньше (мельче будет мыльно даже в рамке)
+IMG_MIN_PIXELS_REGULAR = 130_000
+IMG_MIN_SIDE_IMPORTANT = 240       # у официальных постов планка ниже; если не проходит, делаем карточку с заголовком
 IMG_MAX_SUM_SIDES = 9000           # Telegram: ширина плюс высота не больше 10000
 IMG_MAX_RATIO = 15                 # слишком вытянутые картинки Telegram не принимает
 PAGE_MAX_BYTES = 6 * 1024 * 1024   # больше этого с сайтов не читаем
+FRAME_IMAGES = True                # единая фирменная рамка для всех картинок постов
 # Текст
 TITLE_MAX = 220
 # Состояние
@@ -246,9 +247,39 @@ def expand_candidates(urls):
 
 
 try:  # Pillow нужен только для карточек и уменьшения огромных картинок; без него бот работает
-    from PIL import Image, ImageDraw, ImageFont
+    from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageOps
 except Exception:  # pragma: no cover
-    Image = ImageDraw = ImageFont = None
+    Image = ImageDraw = ImageFont = ImageFilter = ImageOps = None
+
+
+def ensure_pillow():
+    """Если Pillow нет (например, в workflow не было шага установки), пробуем поставить его сами."""
+    global Image, ImageDraw, ImageFont, ImageFilter, ImageOps
+    if Image is not None:
+        return True
+    try:
+        subprocess.run([sys.executable, "-m", "pip", "install", "--quiet", "--disable-pip-version-check", "pillow"],
+                       timeout=150, check=True, capture_output=True)
+        pil = importlib.import_module("PIL")
+        Image = importlib.import_module("PIL.Image")
+        ImageDraw = importlib.import_module("PIL.ImageDraw")
+        ImageFont = importlib.import_module("PIL.ImageFont")
+        ImageFilter = importlib.import_module("PIL.ImageFilter")
+        ImageOps = importlib.import_module("PIL.ImageOps")
+        print("Pillow установлен автоматически")
+        return True
+    except Exception as ex:
+        print("Pillow не установился:", ex)
+        return False
+
+
+def cards_status():
+    """Почему карточки работают или нет: строка для лога."""
+    if Image is None:
+        return "карточки отключены: не установлен Pillow"
+    if card_font(40) is None:
+        return "карточки отключены: нет шрифта с кириллицей (нужен fonts-dejavu-core или файл font.ttf)"
+    return "карточки включены"
 
 
 def shrink_image(data, max_side=2560):
@@ -1303,7 +1334,7 @@ def build_post(item, title, text, important, phrase=""):
 
 
 def send(item, important, phrase=""):
-    """Готовит текст (языковая модель или переводчик), проверяет картинку и отправляет пост."""
+    """Готовит текст (языковая модель или переводчик), делает единую картинку и отправляет пост."""
     ru = item.get("_ru")
     if ru:
         title, text = ru["title"], ru["text"]
@@ -1312,8 +1343,21 @@ def send(item, important, phrase=""):
         text = translate(item.get("text", ""))
     post = build_post(item, title, text, important, phrase)
     img = load_image(item, important)
-    if img:
-        data, fmt = img
+    text_only_ok = important or item.get("force_link")
+    if not img and not text_only_ok:
+        raise LowQualityImage("нет картинки нужного качества")
+    data, fmt = img if img else (None, "jpeg")
+    if FRAME_IMAGES and not item.get("img_bytes"):
+        try:
+            emoji, label, tag = item_topic(item, important)
+            community = bool(item.get("community")) and not important
+            badge = ("ВАЖНО · " if important else "ИЗ СООБЩЕСТВА · " if community else "") + label.upper()
+            framed = compose_post_image(data, title, badge, tag, important)
+            if framed:
+                data, fmt = framed, "jpeg"
+        except Exception as ex:
+            print("  рамка для картинки не получилась, беру исходную:", ex)
+    if data:
         try:
             tg_upload(data, post, fmt)
             return
@@ -1324,9 +1368,8 @@ def send(item, important, phrase=""):
                 raise
         except Exception:
             pass
-    text_only_ok = important or item.get("force_link")
-    if not text_only_ok:
-        raise LowQualityImage("нет картинки нужного качества или Telegram её не принял")
+        if not text_only_ok:
+            raise LowQualityImage("Telegram не принял картинку")
     tg_json("sendMessage", {"chat_id": CHAT, "text": post, "parse_mode": "HTML"})
 
 
@@ -1797,19 +1840,29 @@ def maybe_post_meta(state, started, force=False):
     if not text:
         print("мета: слишком мало бойцов в рейтинге")
         return False
-    try:  # картинка-тир-лист перед текстом (если есть Pillow и портреты бойцов)
+    try:  # картинка-тир-лист перед текстом
         rows15 = rank_rows(agg["stats"], META_MIN_PICKS)[:15]
         portraits = {}
-        urls = {nice_name(b["name"]).upper(): portrait_url(b) for b in load_brawlify()}
-        def grab(name):
-            u = urls.get(name.upper())
-            return (name.upper(), download(u, 3 * 1024 * 1024)) if u else (name.upper(), None)
-        with ThreadPoolExecutor(max_workers=6) as pool:
-            portraits = {k: v for k, v in pool.map(grab, [r[0] for r in rows15]) if v}
+        try:  # портреты бойцов нужны для красоты; без них на карточке будут инициалы
+            urls = {nice_name(b["name"]).upper(): portrait_url(b) for b in load_brawlify()}
+
+            def grab(name):
+                u = urls.get(name.upper())
+                try:
+                    return name.upper(), (download(u, 3 * 1024 * 1024) if u else None)
+                except Exception:
+                    return name.upper(), None
+            with ThreadPoolExecutor(max_workers=6) as pool:
+                portraits = {k: v for k, v in pool.map(grab, [r[0] for r in rows15]) if v}
+        except Exception as ex:
+            print("мета: портреты бойцов не загрузились, на карточке будут инициалы:", ex)
         card = make_meta_card(rows15, portraits, agg["battles"])
         if card:
             tg_upload(card, "📊 <b>Мета Brawl Stars</b> · топ-игроки мира\n\n#BrawlStars #мета", "jpeg")
+            print(f"мета: карточка отправлена (портретов {len(portraits)} из {len(rows15)})")
             time.sleep(PAUSE)
+        else:
+            print("мета: без карточки.", cards_status())
     except FatalError:
         raise
     except Exception as ex:
@@ -1822,6 +1875,137 @@ def maybe_post_meta(state, started, force=False):
     count_post(state, "meta")
     print(f"мета опубликована: {agg['battles']} боёв, {ok} журналов")
     return True
+
+
+# ---------- единый стиль картинок постов ----------
+# Любая картинка (арт игрока, превью видео, обложка статьи) кладётся в одинаковую рамку: размытый фон из неё самой,
+# резкая картинка по центру, цветная плашка темы сверху и фирменная полоса снизу. Если подходящей картинки нет,
+# рисуется карточка с заголовком в том же стиле. Поэтому лента выглядит цельно, а пост не превращается в голый текст.
+BRAND_NAME = "NEW BRAWL NEWS"
+TAG_COLORS = {
+    "обновление": (60, 130, 255), "киберспорт": (240, 170, 0), "коллаборация": (176, 70, 245),
+    "новыйбоец": (245, 85, 70), "BrawlTalk": (255, 120, 0), "скины": (245, 95, 165), "утечки": (120, 125, 150),
+    "анонс": (0, 170, 200), "подарки": (50, 190, 90), "события": (0, 185, 140), "видео": (235, 55, 55),
+    "техработы": (140, 140, 160), "мемы": (255, 160, 30), "фанарт": (235, 90, 140), "обсуждение": (80, 150, 255),
+    "сообщество": (130, 90, 230), "новости": (110, 70, 210),
+}
+
+
+def tag_color(tag):
+    return TAG_COLORS.get(tag, (110, 70, 210))
+
+
+def _wrap(draw, text, font, max_w):
+    lines, cur = [], ""
+    for word in text.split():
+        trial = (cur + " " + word).strip()
+        if draw.textlength(trial, font=font) <= max_w or not cur:
+            cur = trial
+        else:
+            lines.append(cur)
+            cur = word
+    if cur:
+        lines.append(cur)
+    return lines
+
+
+def _fit_lines(draw, text, max_w, max_h, start=96, minimum=40, max_lines=7):
+    """Подбирает размер шрифта и переносы так, чтобы заголовок целиком поместился в рамку."""
+    size = start
+    while size >= minimum:
+        f = card_font(size)
+        lines = _wrap(draw, text, f, max_w)
+        if (len(lines) <= max_lines and len(lines) * int(size * 1.2) <= max_h
+                and all(draw.textlength(l, font=f) <= max_w for l in lines)):
+            return f, lines
+        size -= 6
+    f = card_font(minimum)
+    lines = _wrap(draw, text, f, max_w)[:max_lines]
+    while lines and draw.textlength(lines[-1] + "…", font=f) > max_w and len(lines[-1]) > 1:
+        lines[-1] = lines[-1][:-1]
+    if lines:
+        lines[-1] = lines[-1].rstrip(" ,.;:") + "…"
+    return f, lines
+
+
+def _cover(im, w, h):
+    k = max(w / im.width, h / im.height)
+    r = im.resize((max(w, int(im.width * k) + 1), max(h, int(im.height * k) + 1)), Image.LANCZOS)
+    x, y = (r.width - w) // 2, (r.height - h) // 2
+    return r.crop((x, y, x + w, y + h))
+
+
+def _luma(c):
+    return 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]
+
+
+def _decorate_frame(img, badge, color):
+    """Плашка темы сверху и фирменная полоса снизу (одинаковые для всех картинок)."""
+    W, H = img.size
+    over = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    od = ImageDraw.Draw(over)
+    od.rectangle((0, H - 112, W, H), fill=(12, 7, 44, 215))
+    od.rectangle((0, H - 118, W, H - 112), fill=color + (255,))
+    img = Image.alpha_composite(img.convert("RGBA"), over)
+    d = ImageDraw.Draw(img)
+    d.text((40, H - 56), BRAND_NAME, font=card_font(44), fill=(255, 255, 255), anchor="lm")
+    if CHAT.startswith("@"):
+        d.text((W - 40, H - 56), CHAT, font=card_font(34), fill=(185, 175, 235), anchor="rm")
+    f = _fit(d, badge, W - 120, 42, 24)
+    tw = d.textlength(badge, font=f)
+    d.rounded_rectangle((36, 34, 36 + tw + 52, 34 + f.size + 30), radius=28, fill=color + (255,))
+    d.text((62, 34 + (f.size + 30) // 2), badge, font=f, anchor="lm",
+           fill=(30, 20, 60) if _luma(color) > 165 else (255, 255, 255))
+    return img.convert("RGB")
+
+
+def compose_post_image(src, title, badge, tag, important=False):
+    """Фирменная картинка 1080x1080 (JPEG) из исходной картинки или, если её нет, из заголовка.
+    None, если нет Pillow или шрифта: тогда бот шлёт как есть."""
+    if Image is None or card_font(40) is None:
+        return None
+    W = H = 1080
+    color = tag_color(tag)
+    box_w, box_h, top = 960, 790, 128
+    if src:
+        im = Image.open(io.BytesIO(src))
+        try:
+            im = ImageOps.exif_transpose(im)
+        except Exception:
+            pass
+        rgba = im.convert("RGBA")
+        flat = Image.new("RGB", rgba.size, (28, 18, 66))
+        flat.paste(rgba, mask=rgba.split()[3])
+        bg = _cover(flat, W, H).filter(ImageFilter.GaussianBlur(38))
+        bg = Image.blend(bg, Image.new("RGB", (W, H), (12, 7, 44)), 0.5)
+        k = min(box_w / rgba.width, box_h / rgba.height, 1.3)  # сильно не растягиваем, чтобы не было мыла
+        fg = rgba.resize((max(1, int(rgba.width * k)), max(1, int(rgba.height * k))), Image.LANCZOS)
+        x, y = (W - fg.width) // 2, top + (box_h - fg.height) // 2
+        mask = Image.new("L", fg.size, 0)
+        ImageDraw.Draw(mask).rounded_rectangle((0, 0, fg.width - 1, fg.height - 1), radius=34, fill=255)
+        shadow = Image.new("L", (W, H), 0)
+        ImageDraw.Draw(shadow).rounded_rectangle((x + 6, y + 14, x + fg.width + 6, y + fg.height + 14), radius=34, fill=150)
+        bg.paste(Image.new("RGB", (W, H), (0, 0, 0)), (0, 0), shadow.filter(ImageFilter.GaussianBlur(20)))
+        bg.paste(fg.convert("RGB"), (x, y), mask)
+        img = bg
+    else:
+        dark = tuple(int(c * 0.45) for c in color)
+        img = _gradient(W, H, dark, (14, 8, 48)).convert("RGBA")
+        deco = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        dd = ImageDraw.Draw(deco)
+        dd.ellipse((W - 520, -180, W + 160, 500), fill=color + (60,))
+        dd.ellipse((-220, H - 640, 420, H - 40), fill=color + (45,))
+        img = Image.alpha_composite(img, deco).convert("RGB")
+        d = ImageDraw.Draw(img)
+        f, lines = _fit_lines(d, title.strip() or BRAND_NAME, 900, 640)
+        lh = int(f.size * 1.2)
+        y0 = top + (box_h - lh * len(lines)) // 2
+        for i, line in enumerate(lines):
+            d.text((W // 2, y0 + i * lh + lh // 2), line, font=f, fill=(255, 255, 255), anchor="mm",
+                   stroke_width=3, stroke_fill=(14, 8, 48))
+    out = io.BytesIO()
+    _decorate_frame(img, badge, color).save(out, format="JPEG", quality=90)
+    return out.getvalue()
 
 
 # ---------- карточки (необязательно, нужен Pillow) ----------
@@ -2146,15 +2330,24 @@ def maybe_post_guide(state, started, force=False):
         portrait = download(portrait_url(b), 5 * 1024 * 1024) if portrait_url(b) else None
     except Exception:
         portrait = None
-    card = make_guide_card(info["name"], info["cls_ru"], portrait, info["short_stat"]) if portrait else None
+    if not portrait:
+        print("гайд: портрет бойца не скачался, карточка будет без него")
+    card = None
+    try:
+        card = make_guide_card(info["name"], info["cls_ru"], portrait, info["short_stat"])
+    except Exception as ex:
+        print("гайд: карточка не нарисовалась:", ex)
     if card:
         try:
             tg_upload(card, build_guide_caption(info), "jpeg")
+            print("гайд: карточка отправлена")
             time.sleep(PAUSE)
         except FatalError:
             raise
         except Exception as ex:
             print("гайд: карточка не отправилась, пойдёт только текст:", ex)
+    else:
+        print("гайд: без карточки.", cards_status())
     tg_json("sendMessage", {"chat_id": CHAT, "text": text, "parse_mode": "HTML",
                             "disable_web_page_preview": True})
     state.setdefault("guided", {})[b["name"].upper()] = today
@@ -2221,6 +2414,8 @@ def main():
         print("ОШИБКА:", ex)
         sys.exit(1)
 
+    ensure_pillow()
+    print(cards_status())
     state = load_state()
     seen = set(state["seen"])
     recent = state["recent"]
