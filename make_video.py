@@ -14,7 +14,14 @@ MUSIC_IDX_FILE = "music_idx.txt"
 # 1. Инициализация нейросети Silero TTS
 print("Загрузка модели Silero TTS (это может занять минуту при первом запуске)...")
 try:
-    model, _ = torch.hub.load(repo_or_dir='snakers4/silero-models', model='silero_tts', language='ru', speaker='v5_ru')
+    # ДОБАВЛЕН ПАРАМЕТР trust_repo=True
+    model, _ = torch.hub.load(
+        repo_or_dir='snakers4/silero-models', 
+        model='silero_tts', 
+        language='ru', 
+        speaker='v5_ru',
+        trust_repo=True 
+    )
     model.to('cpu')
     print("Модель успешно загружена!")
 except Exception as e:
@@ -23,27 +30,22 @@ except Exception as e:
 
 def generate_voice(text, out_file="voice.mp3"):
     print("Генерирую голос...")
-    # Очищаем текст от спецсимволов и эмодзи
     clean_text = re.sub(r'[^\w\s.,!?]', '', text)
     if not clean_text.strip():
         clean_text = "Привет, это тест."
         
-    speaker = 'aidar' # Мужской голос
+    speaker = 'aidar'
     sample_rate = 48000
     
-    # Генерация аудио-тензора
     audio = model.apply_tts(text=clean_text, speaker=speaker, sample_rate=sample_rate)
     
-    # Сохраняем во временный WAV
     temp_wav = "voice_temp.wav"
     torchaudio.save(temp_wav, audio.unsqueeze(0), sample_rate)
     
-    # Конвертируем в MP3 через MoviePy (чтобы дальше было проще склеивать)
     clip = AudioFileClip(temp_wav)
     clip.write_audiofile(out_file, codec='mp3', logger=None)
     clip.close()
     
-    # Удаляем временный файл
     if os.path.exists(temp_wav):
         os.remove(temp_wav)
     print("Голос готов!")
@@ -112,7 +114,6 @@ def create_video(text, title, img_path, brawler_path, out_path="result.mp4"):
     clip_voice = clip_voice.with_start(0)
     clips_audio = [clip_voice]
     
-    # Музыка по очереди
     music_dir = "music"
     if os.path.exists(music_dir) and os.path.isdir(music_dir):
         tracks = sorted([f for f in os.listdir(music_dir) if f.endswith(".mp3")])
