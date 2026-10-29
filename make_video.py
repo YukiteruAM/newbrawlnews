@@ -1,6 +1,5 @@
-import os, sys, re
-import torch
-import soundfile as sf
+import os, sys, re, asyncio
+import edge_tts
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 import numpy as np
 from moviepy import *
@@ -11,46 +10,36 @@ W, H = 1080, 1920
 FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 MUSIC_IDX_FILE = "music_idx.txt"
 
-# 1. Инициализация нейросети Silero TTS
-print("Загрузка модели Silero TTS (это может занять минуту при первом запуске)...")
-try:
-    model, _ = torch.hub.load(
-        repo_or_dir='snakers4/silero-models', 
-        model='silero_tts', 
-        language='ru', 
-        speaker='v5_ru',
-        trust_repo=True 
-    )
-    model.to('cpu')
-    print("Модель успешно загружена!")
-except Exception as e:
-    print("КРИТИЧЕСКАЯ ОШИБКА при загрузке Silero:", e)
-    sys.exit(1)
+async def _generate_voice_async(text, out_file):
+    # Дмитрий - энергичный мужской голос (есть еще Svetlana - женский)
+    voice = "ru-RU-DmitryNeural" 
+    communicate = edge_tts.Communicate(text, voice)
+    await communicate.save(out_file)
 
 def generate_voice(text, out_file="voice.mp3"):
-    print("Генерирую голос...")
-    clean_text = re.sub(r'[^\w\s.,!?]', '', text)
+    print("Генерирую голос через Microsoft Edge TTS...")
+    
+    # ЖЕСТКАЯ ОЧИСТКА: убираем всё, кроме букв, цифр и базовой пунктуации
+    # (эмодзи и спецсимволы часто ломают запрос к Microsoft)
+    clean_text = re.sub(r'[^а-яА-ЯёЁa-zA-Z0-9\s.,!?]', '', text)
+    clean_text = clean_text.replace('...', '.').replace('..', '.')
     if not clean_text.strip():
         clean_text = "Привет, это тест."
-        
-    speaker = 'aidar'
-    sample_rate = 48000
-    
-    # Генерируем аудио (это тензор PyTorch)
-    audio = model.apply_tts(text=clean_text, speaker=speaker, sample_rate=sample_rate)
-    
-    # Конвертируем тензор в numpy-массив и сохраняем через soundfile (обходим баг torchaudio)
-    temp_wav = "voice_temp.wav"
-    sf.write(temp_wav, audio.numpy(), sample_rate)
-    
-    # Конвертируем в MP3 через MoviePy
-    clip = AudioFileClip(temp_wav)
-    clip.write_audiofile(out_file, codec='mp3', logger=None)
-    clip.close()
-    
-    if os.path.exists(temp_wav):
-        os.remove(temp_wav)
-    print("Голос готов!")
+
+    # Пробуем 3 раза, если Microsoft блокирует соединение
+    for attempt in range(3):
+        try:
+            asyncio.run(_generate_voice_async(clean_text, out_file))
+            if os.path.exists(out_file) and os.path.getsize(out_file) > 1000:
+                print("Голос успешно сгенерирован!")
+                return
+        except Exception as e:
+            print(f"Попытка {attempt + 1} не удалась: {e}")
+            import time
+            time.sleep(2)
+            
+    print("КРИТИЧЕСКАЯ ОШИБКА: Не удалось получить голос от Microsoft.")
+    sys.exit(1)
 
 def get_base_bg():
     bg = Image.new('RGBA', (W, H), (10, 5, 20, 255))
@@ -153,5 +142,5 @@ def create_video(text, title, img_path, brawler_path, out_path="result.mp4"):
     return out_path
 
 if __name__ == "__main__":
-    test_text = "Привет, это тест нейросетевого диктора Silero. Никаких блокировок, только чистый звук. Смотрите, как я пульсирую."
-    create_video(test_text, "ТЕСТ ГОЛОСА", "meta_temp.png", "brawler_temp.png")
+    test_text = "Привет! Это тест нового живого голоса от Microsoft. Слышишь, как четко и энергично я звучал? Теперь ролики будут залетать в рекомендации!"
+    create_video(test_text, "ТЕСТ ЖИВОГО ГОЛОСА", "meta_temp.png", "brawler_temp.png")
