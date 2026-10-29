@@ -11,9 +11,9 @@ FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 MUSIC_IDX_FILE = "music_idx.txt"
 
 async def _generate_voice_async(text, out_file):
-    # Дмитрий - живой, энергичный мужской голос
+    # Дмитрий + ускорение на 15% и повышение тона для энергичности
     voice = "ru-RU-DmitryNeural" 
-    communicate = edge_tts.Communicate(text, voice)
+    communicate = edge_tts.Communicate(text, voice, rate="+15%", pitch="+5Hz")
     await communicate.save(out_file)
 
 def generate_voice(text, out_file="voice.mp3"):
