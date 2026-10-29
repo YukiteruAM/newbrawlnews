@@ -1142,7 +1142,8 @@ def pick_phrase(item, used, important=True, rng=random):
 # Без ключа бот использует обычный переводчик. Любой сбой модели тоже ведёт к переводчику.
 LLM_KEY = os.environ.get("LLM_API_KEY", "")
 LLM_BASE = (os.environ.get("LLM_BASE_URL") or "https://generativelanguage.googleapis.com/v1beta/openai").rstrip("/")
-LLM_MODEL = os.environ.get("LLM_MODEL") or "gemini-2.5-flash"
+LLM_MODEL = os.environ.get("LLM_MODEL") or "gemini-flash-latest"  # псевдоним на актуальную версию Flash
+LLM_MODELS = [LLM_MODEL] + [m for m in ("gemini-2.5-flash",) if m != LLM_MODEL]  # запасная модель, если первой нет
 LLM_DAILY_LIMIT = 60      # запросов к модели в сутки
 LLM_TIMEOUT = 45
 
@@ -1159,26 +1160,31 @@ LLM_SYSTEM = """Ты редактор русскоязычного Telegram-ка
 
 
 def llm_call(user_payload):
-    body = json.dumps({
-        "model": LLM_MODEL, "temperature": 0.5,
-        "messages": [{"role": "system", "content": LLM_SYSTEM},
-                     {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)}],
-    }).encode()
     last = None
-    for i in range(2):
-        try:
-            req = urllib.request.Request(LLM_BASE + "/chat/completions", data=body, headers={
-                "Content-Type": "application/json", "Authorization": "Bearer " + LLM_KEY})
-            data = json.loads(urllib.request.urlopen(req, timeout=LLM_TIMEOUT).read())
-            return data["choices"][0]["message"]["content"]
-        except urllib.error.HTTPError as ex:
-            last = ex
-            if ex.code not in (408, 429, 500, 502, 503, 504):
-                break
-            time.sleep(3 * (i + 1))
-        except Exception as ex:
-            last = ex
-            time.sleep(3)
+    for model in LLM_MODELS:
+        body = json.dumps({
+            "model": model, "temperature": 0.5,
+            "messages": [{"role": "system", "content": LLM_SYSTEM},
+                         {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)}],
+        }).encode()
+        for i in range(2):
+            try:
+                req = urllib.request.Request(LLM_BASE + "/chat/completions", data=body, headers={
+                    "Content-Type": "application/json", "Authorization": "Bearer " + LLM_KEY})
+                data = json.loads(urllib.request.urlopen(req, timeout=LLM_TIMEOUT).read())
+                return data["choices"][0]["message"]["content"]
+            except urllib.error.HTTPError as ex:
+                last = ex
+                if ex.code in (400, 404):
+                    break  # такой модели нет: пробуем запасную
+                if ex.code not in (408, 429, 500, 502, 503, 504):
+                    raise
+                time.sleep(3 * (i + 1))
+            except Exception as ex:
+                last = ex
+                time.sleep(3)
+        else:
+            raise last  # временные сбои исчерпали попытки на этой модели
     raise last
 
 
