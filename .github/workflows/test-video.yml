@@ -1,0 +1,31 @@
+name: Test Video
+on: [push, workflow_dispatch]
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run video maker
+        run: python make_video.py
+      - name: Save music index
+        if: always()
+        run: |
+          git config user.name "bot"
+          git config user.email "bot@users.noreply.github.com"
+          git add music_idx.txt || true
+          if ! git diff --cached --quiet; then
+            git commit -m "update music index"
+            git pull --rebase
+            git push
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: test-video
+          path: result.mp4
