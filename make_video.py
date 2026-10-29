@@ -1,6 +1,6 @@
 import os, sys, re
 import torch
-import torchaudio
+import soundfile as sf
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 import numpy as np
 from moviepy import *
@@ -14,7 +14,6 @@ MUSIC_IDX_FILE = "music_idx.txt"
 # 1. Инициализация нейросети Silero TTS
 print("Загрузка модели Silero TTS (это может занять минуту при первом запуске)...")
 try:
-    # ДОБАВЛЕН ПАРАМЕТР trust_repo=True
     model, _ = torch.hub.load(
         repo_or_dir='snakers4/silero-models', 
         model='silero_tts', 
@@ -37,11 +36,14 @@ def generate_voice(text, out_file="voice.mp3"):
     speaker = 'aidar'
     sample_rate = 48000
     
+    # Генерируем аудио (это тензор PyTorch)
     audio = model.apply_tts(text=clean_text, speaker=speaker, sample_rate=sample_rate)
     
+    # Конвертируем тензор в numpy-массив и сохраняем через soundfile (обходим баг torchaudio)
     temp_wav = "voice_temp.wav"
-    torchaudio.save(temp_wav, audio.unsqueeze(0), sample_rate)
+    sf.write(temp_wav, audio.numpy(), sample_rate)
     
+    # Конвертируем в MP3 через MoviePy
     clip = AudioFileClip(temp_wav)
     clip.write_audiofile(out_file, codec='mp3', logger=None)
     clip.close()
