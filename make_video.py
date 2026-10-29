@@ -1,7 +1,8 @@
 import os, sys, asyncio, edge_tts, io
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 import numpy as np
-from moviepy.editor import *
+from moviepy import *
+import moviepy.video.fx as vfx
 
 W, H = 1080, 1920
 FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
@@ -50,31 +51,32 @@ def create_video(text, title, img_path, brawler_path, out_path="result.mp4"):
         brawler_img.save("brawler_temp.png")
 
     print("3. Собираю видео...")
-    clip_bg = ImageClip("bg_temp.png").set_duration(15)
+    # Новый синтаксис MoviePy 2.0
+    clip_bg = ImageClip("bg_temp.png").with_duration(15)
     clips = [clip_bg]
     
     if os.path.exists("meta_temp.png"):
         clip_meta = (ImageClip("meta_temp.png")
-                     .set_duration(15)
-                     .set_position(("center", "center"))
-                     .crossfadein(1)
-                     .resize(lambda t: 1 + 0.05*np.sin(t*2)))
+                     .with_duration(15)
+                     .with_position(("center", "center"))
+                     .with_effects([vfx.CrossFadeIn(1)])
+                     .resized(lambda t: 1 + 0.05*np.sin(t*2)))
         clips.append(clip_meta)
     
     if os.path.exists("brawler_temp.png"):
         clip_brawler = (ImageClip("brawler_temp.png")
-                        .set_duration(15)
-                        .set_position((W - 400, H - 450))
-                        .resize(lambda t: 1 + 0.03*np.sin(t*10)))
+                        .with_duration(15)
+                        .with_position((W - 400, H - 450))
+                        .resized(lambda t: 1 + 0.03*np.sin(t*10)))
         clips.append(clip_brawler)
     
     clip_voice = AudioFileClip("voice.mp3")
     duration = clip_voice.duration + 0.5
     
     for c in clips:
-        c.duration = duration
+        c.with_duration(duration)
         
-    clip_voice = clip_voice.set_start(0)
+    clip_voice = clip_voice.with_start(0)
     clips_audio = [clip_voice]
     
     # --- МУЗЫКА ПО ОЧЕРЕДИ ---
@@ -98,17 +100,18 @@ def create_video(text, title, img_path, brawler_path, out_path="result.mp4"):
             with open(MUSIC_IDX_FILE, "w") as f:
                 f.write(str((idx + 1) % len(tracks)))
             
-            clip_bgm = AudioFileClip(chosen_track).volumex(0.1)
+            clip_bgm = AudioFileClip(chosen_track).with_volume_scaled(0.1)
             if clip_bgm.duration < duration:
-                clip_bgm = clip_bgm.loop(duration=duration)
+                clip_bgm = clip_bgm.looped(duration=duration)
             else:
-                clip_bgm = clip_bgm.subclip(0, duration)
+                clip_bgm = clip_bgm.subclipped(0, duration)
             clips_audio.append(clip_bgm)
         else:
             print("Музыка не найдена в папке music/")
 
+    # Новый синтаксис для композиции
     final = CompositeVideoClip(clips, size=(W, H))
-    final = final.set_audio(CompositeAudioClip(clips_audio))
+    final = final.with_audio(CompositeAudioClip(clips_audio))
     
     final.write_videofile(out_path, fps=24, codec="libx264", audio_codec="aac", threads=4)
     print("4. Видео готово:", out_path)
