@@ -1981,10 +1981,12 @@ def compose_post_image(src, title, badge, tag, important=False):
         k = min(box_w / rgba.width, box_h / rgba.height, 1.3)  # сильно не растягиваем, чтобы не было мыла
         fg = rgba.resize((max(1, int(rgba.width * k)), max(1, int(rgba.height * k))), Image.LANCZOS)
         x, y = (W - fg.width) // 2, top + (box_h - fg.height) // 2
+        from PIL import ImageChops
         mask = Image.new("L", fg.size, 0)
         ImageDraw.Draw(mask).rounded_rectangle((0, 0, fg.width - 1, fg.height - 1), radius=34, fill=255)
+        mask = ImageChops.multiply(mask, fg.split()[3])  # прозрачные углы (иконки, портреты) остаются прозрачными
         shadow = Image.new("L", (W, H), 0)
-        ImageDraw.Draw(shadow).rounded_rectangle((x + 6, y + 14, x + fg.width + 6, y + fg.height + 14), radius=34, fill=150)
+        shadow.paste(mask.point(lambda v: int(v * 0.6)), (x + 6, y + 14))  # тень повторяет форму картинки
         bg.paste(Image.new("RGB", (W, H), (0, 0, 0)), (0, 0), shadow.filter(ImageFilter.GaussianBlur(20)))
         bg.paste(fg.convert("RGB"), (x, y), mask)
         img = bg
