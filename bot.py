@@ -11,8 +11,8 @@ CHAT = os.environ.get("CHAT_ID", "")  # @имя_канала или -100...
 
 # ===================== ЛИМИТЫ И НАСТРОЙКИ =====================
 # Публикации
-MAX_PER_RUN = 8               # максимум постов за один запуск (раз в 10 минут)
-DAILY_REGULAR_LIMIT = 20       # обычные посты сообщества в сутки
+MAX_PER_RUN = 3               # максимум постов за один запуск (раз в 10 минут)
+DAILY_REGULAR_LIMIT = 8       # обычные посты сообщества в сутки
 DAILY_IMPORTANT_LIMIT = 25    # страховка от лавины «важных» новостей
 DAILY_TOTAL_LIMIT = 40        # всё вместе: новости, сообщество, гайд, мета, баланс
 DAILY_GUIDE_LIMIT = 1         # гайд на бойца: один в сутки
@@ -2456,7 +2456,14 @@ def main():
         print(f"источник {key}: {len(items)} записей")
         if not items:
             continue
-        
+        if key not in state["sources"]:
+            # новый источник: запоминаем всё, что уже есть, чтобы не завалить канал
+            for it in items:
+                mark(it["id"])
+                remember(it, src["important"])
+            state["sources"].append(key)
+            print("  источник добавлен, старые записи пропущены")
+            continue
         for it in items:
             if it["id"] not in seen:
                 queue.append((it, src["important"], key))
