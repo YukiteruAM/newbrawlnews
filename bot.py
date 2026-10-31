@@ -2456,14 +2456,7 @@ def main():
         print(f"источник {key}: {len(items)} записей")
         if not items:
             continue
-        if key not in state["sources"]:
-            # новый источник: запоминаем всё, что уже есть, чтобы не завалить канал
-            for it in items:
-                mark(it["id"])
-                remember(it, src["important"])
-            state["sources"].append(key)
-            print("  источник добавлен, старые записи пропущены")
-            continue
+        
         for it in items:
             if it["id"] not in seen:
                 queue.append((it, src["important"], key))
