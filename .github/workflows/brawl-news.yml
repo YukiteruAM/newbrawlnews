@@ -35,6 +35,7 @@ jobs:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
           BRAWL_API_KEY: ${{ secrets.BRAWL_API_KEY }}
+          VIDEO_CHAT_ID: ${{ secrets.VIDEO_CHAT_ID }}
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
           LLM_MODEL: ${{ vars.LLM_MODEL }}
           LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
