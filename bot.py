@@ -4,15 +4,18 @@ import os, sys, re, io, json, html, time, uuid, datetime, random, math, struct, 
 import urllib.request, urllib.parse, urllib.error
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
+from collections import Counter
 from html.parser import HTMLParser
 
 TOKEN = os.environ.get("BOT_TOKEN", "")
 CHAT = os.environ.get("CHAT_ID", "")  # @имя_канала или -100...
+TG_API = (os.environ.get("TG_API_BASE") or "https://api.telegram.org").rstrip("/")
+ADMIN_CHAT = os.environ.get("ADMIN_CHAT_ID") or os.environ.get("VIDEO_CHAT_ID", "")  # сюда бот пишет о неполадках
 
 # ===================== ЛИМИТЫ И НАСТРОЙКИ =====================
 # Публикации
-MAX_PER_RUN = 7               # максимум постов за один запуск (раз в 10 минут)
-DAILY_REGULAR_LIMIT = 15       # обычные посты сообщества в сутки
+MAX_PER_RUN = 3               # максимум постов за один запуск (раз в 10 минут)
+DAILY_REGULAR_LIMIT = 8       # обычные посты сообщества в сутки
 DAILY_IMPORTANT_LIMIT = 25    # страховка от лавины «важных» новостей
 DAILY_TOTAL_LIMIT = 40        # всё вместе: новости, сообщество, гайд, мета, баланс
 DAILY_GUIDE_LIMIT = 1         # гайд на бойца: один в сутки
@@ -146,6 +149,22 @@ class SkipItem(Exception):
 
 class LowQualityImage(Exception):
     """У обычного поста нет картинки нормального качества: лучше не публиковать."""
+
+
+class ImageUnavailable(Exception):
+    """Картинку не удалось скачать ни нам, ни Telegram: пробуем позже, пост не теряем."""
+
+
+def http_err_text(ex):
+    try:
+        body = ex.read().decode("utf-8", "replace")[:300]
+    except Exception:
+        body = ""
+    return f"HTTP {getattr(ex, 'code', '?')}: {body}"
+
+
+def strip_html(text):
+    return html.unescape(re.sub(r"</?(?:b|i|u|s|a|code|pre|blockquote)[^>]*>", "", text))
 
 
 # ---------- сеть ----------
@@ -303,11 +322,13 @@ def load_image(item, important):
     min_side = IMG_MIN_SIDE_IMPORTANT if important else IMG_MIN_SIDE_REGULAR
     min_px = 0 if important else IMG_MIN_PIXELS_REGULAR
     cands = item.get("imgs") or expand_candidates([item.get("img", "")])
+    item["_img_note"] = "none" if not [c for c in cands if c] else "download_failed"
     for url in cands[:6]:
         try:
             data = download(url, IMG_MAX_BYTES)
         except Exception:
             continue
+        item["_img_note"] = "low_quality"  # скачать удалось, но качество проверим ниже
         info = image_info(data)
         if not info:
             continue
@@ -713,9 +734,13 @@ def fetch(src, state):
     return items
 
 
+LAST_ERRORS = {}
+
+
 def fetch_all(sources, state):
-    """Загружает все источники одновременно. Возвращает {имя: записи или None}."""
+    """Загружает все источники одновременно. Возвращает {имя: записи или None}; причины сбоев в LAST_ERRORS."""
     out = {}
+    LAST_ERRORS.clear()
     with ThreadPoolExecutor(max_workers=max(1, min(6, len(sources)))) as pool:
         futs = {s["name"]: pool.submit(fetch, s, state) for s in sources}
         for s in sources:
@@ -723,6 +748,7 @@ def fetch_all(sources, state):
                 out[s["name"]] = futs[s["name"]].result(timeout=120)
             except Exception as ex:
                 print("источник недоступен:", s["name"], "-", ex)
+                LAST_ERRORS[s["name"]] = str(ex)[:160]
                 out[s["name"]] = None
     return out
 
@@ -737,7 +763,7 @@ def _fatal_check(ex):
 
 def tg_json(method, payload):
     req = urllib.request.Request(
-        f"https://api.telegram.org/bot{TOKEN}/{method}",
+        f"{TG_API}/bot{TOKEN}/{method}",
         data=json.dumps(payload).encode(),
         headers={"Content-Type": "application/json"})
     try:
@@ -750,10 +776,11 @@ def tg_json(method, payload):
 _MIME = {"jpeg": "image/jpeg", "png": "image/png", "webp": "image/webp"}
 
 
-def tg_upload(photo, caption, fmt="jpeg"):
+def tg_upload(photo, caption, fmt="jpeg", parse_mode="HTML"):
     b = uuid.uuid4().hex
     body = io.BytesIO()
-    for name, val in (("chat_id", CHAT), ("caption", caption), ("parse_mode", "HTML")):
+    fields = [("chat_id", CHAT), ("caption", caption)] + ([("parse_mode", parse_mode)] if parse_mode else [])
+    for name, val in fields:
         body.write(f'--{b}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{val}\r\n'.encode())
     ext = "jpg" if fmt == "jpeg" else fmt
     body.write((f'--{b}\r\nContent-Disposition: form-data; name="photo"; filename="p.{ext}"\r\n'
@@ -761,7 +788,7 @@ def tg_upload(photo, caption, fmt="jpeg"):
     body.write(photo)
     body.write(f"\r\n--{b}--\r\n".encode())
     req = urllib.request.Request(
-        f"https://api.telegram.org/bot{TOKEN}/sendPhoto", data=body.getvalue(),
+        f"{TG_API}/bot{TOKEN}/sendPhoto", data=body.getvalue(),
         headers={"Content-Type": f"multipart/form-data; boundary={b}"})
     try:
         return urllib.request.urlopen(req, timeout=60).read()
@@ -1334,7 +1361,8 @@ def build_post(item, title, text, important, phrase=""):
 
 
 def send(item, important, phrase=""):
-    """Готовит текст (языковая модель или переводчик), делает единую картинку и отправляет пост."""
+    """Готовит текст (языковая модель или переводчик), делает единую картинку и отправляет пост.
+    Причину любой неудачи пишем в лог: тихо ничего не теряется."""
     ru = item.get("_ru")
     if ru:
         title, text = ru["title"], ru["text"]
@@ -1343,9 +1371,28 @@ def send(item, important, phrase=""):
         text = translate(item.get("text", ""))
     post = build_post(item, title, text, important, phrase)
     img = load_image(item, important)
+    note = item.get("_img_note", "")
     text_only_ok = important or item.get("force_link")
+    if not img and note == "download_failed":
+        # наш сервер не смог скачать картинку (сайт часто закрыт для серверов GitHub): пусть её скачает сам Telegram
+        url = next((u for u in (item.get("imgs") or [item.get("img")]) if u), "")
+        if url:
+            try:
+                tg_json("sendPhoto", {"chat_id": CHAT, "photo": upgrade_image_url(url), "caption": post, "parse_mode": "HTML"})
+                print("  картинку скачал сам Telegram")
+                return
+            except FatalError:
+                raise
+            except urllib.error.HTTPError as ex:
+                if ex.code == 429:
+                    raise
+                print("  Telegram не смог скачать картинку:", http_err_text(ex))
+            except Exception as ex:
+                print("  Telegram не смог скачать картинку:", ex)
     if not img and not text_only_ok:
-        raise LowQualityImage("нет картинки нужного качества")
+        if note == "download_failed":
+            raise ImageUnavailable("картинка недоступна ни нам, ни Telegram")
+        raise LowQualityImage("нет картинки нужного качества" if note != "none" else "у поста нет картинки")
     data, fmt = img if img else (None, "jpeg")
     if FRAME_IMAGES and not item.get("img_bytes"):
         try:
@@ -1358,19 +1405,36 @@ def send(item, important, phrase=""):
         except Exception as ex:
             print("  рамка для картинки не получилась, беру исходную:", ex)
     if data:
-        try:
-            tg_upload(data, post, fmt)
-            return
-        except FatalError:
-            raise
-        except urllib.error.HTTPError as ex:
-            if ex.code == 429:
+        err = ""
+        for mode, caption in (("HTML", post), (None, strip_html(post))):
+            try:
+                tg_upload(data, caption, fmt, mode)
+                return
+            except FatalError:
                 raise
-        except Exception:
-            pass
+            except urllib.error.HTTPError as ex:
+                if ex.code == 429:
+                    raise
+                err = http_err_text(ex)
+                print("  Telegram не принял картинку:", err)
+                if "parse entities" not in err:
+                    break  # без разметки повторяем только если Telegram не понял разметку
+            except Exception as ex:
+                err = str(ex)
+                print("  отправка картинки не удалась:", err)
+                break
         if not text_only_ok:
-            raise LowQualityImage("Telegram не принял картинку")
-    tg_json("sendMessage", {"chat_id": CHAT, "text": post, "parse_mode": "HTML"})
+            raise RuntimeError("Telegram не принял картинку: " + err)
+    try:
+        tg_json("sendMessage", {"chat_id": CHAT, "text": post, "parse_mode": "HTML"})
+    except urllib.error.HTTPError as ex:
+        if ex.code in (429, 401, 403):
+            raise
+        err = http_err_text(ex)
+        print("  Telegram не принял текст:", err)
+        if "parse entities" not in err:
+            raise
+        tg_json("sendMessage", {"chat_id": CHAT, "text": strip_html(post)})
 
 
 # ---------- разбор баланса из заметок об обновлении ----------
@@ -2359,6 +2423,60 @@ def maybe_post_guide(state, started, force=False):
     return True
 
 
+# ---------- самодиагностика: бот сам пишет, если что-то не так ----------
+HEALTH_SRC_FAILS = 6        # источник молчит столько запусков подряд (около часа), и бот предупреждает
+HEALTH_SILENCE_H = 12       # столько часов без единого поста новостей или сообщества, и бот предупреждает
+HEALTH_REPEAT_H = 24        # одно и то же предупреждение не чаще раза в сутки
+
+
+def notify_admin(text):
+    """Личное сообщение владельцу (ADMIN_CHAT_ID или VIDEO_CHAT_ID). Ошибки доставки не мешают работе."""
+    if not ADMIN_CHAT:
+        return False
+    try:
+        tg_json("sendMessage", {"chat_id": ADMIN_CHAT, "text": text, "disable_web_page_preview": True})
+        return True
+    except Exception as ex:
+        print("предупреждение владельцу не отправилось:", ex)
+        return False
+
+
+def report_health(state, results, stats, sent, now_ts=None):
+    """Отслеживает недоступные источники и долгое молчание канала; возвращает список отправленных предупреждений."""
+    now_ts = now_ts or time.time()
+    h = state.setdefault("health", {})
+    src = h.setdefault("src", {})
+    alerts = h.setdefault("alerts", {})
+    h.setdefault("last_post", now_ts)
+    sent_msgs = []
+
+    def alert(key, text):
+        if now_ts - alerts.get(key, 0) >= HEALTH_REPEAT_H * 3600:
+            if notify_admin(text):
+                alerts[key] = now_ts
+                sent_msgs.append(text)
+            elif not ADMIN_CHAT:
+                alerts[key] = now_ts  # без адресата просто не пытаемся каждый раз
+    for name, items in results.items():
+        st = src.setdefault(name, {"bad": 0})
+        if items is None:
+            st["bad"] += 1
+            if st["bad"] >= HEALTH_SRC_FAILS:
+                alert("src:" + name, f"⚠️ Бот: источник «{name}» недоступен уже {st['bad']} запусков подряд.\n"
+                                     f"Причина: {LAST_ERRORS.get(name, 'неизвестно')}")
+        else:
+            st["bad"] = 0
+    if sent:
+        h["last_post"] = now_ts
+    elif now_ts - h["last_post"] >= HEALTH_SILENCE_H * 3600:
+        why = ", ".join(f"{k}: {v}" for k, v in stats.most_common() if k != "новых записей") or "нет данных"
+        ok = sum(1 for v in results.values() if v is not None)
+        alert("silence", f"⚠️ Бот: больше {HEALTH_SILENCE_H} часов не было ни одного поста новостей или сообщества.\n"
+                         f"Источников отвечает: {ok} из {len(results)}. Новых записей за последний запуск: {stats.get('новых записей', 0)}.\n"
+                         f"Что отсеялось: {why}.")
+    return sent_msgs
+
+
 # ---------- состояние ----------
 def count_post(state, kind):
     """Считает пост в суточных лимитах: kind = regular | important | guide | meta | balance."""
@@ -2469,6 +2587,8 @@ def main():
                 queue.append((it, src["important"], key))
 
     queue.sort(key=lambda x: not x[1])  # важное первым
+    stats = Counter()
+    stats["новых записей"] = len(queue)
     sent, errors, quiet = 0, 0, in_quiet_hours(now)
     for it, important, key in queue:
         if sent >= MAX_PER_RUN:
@@ -2480,11 +2600,14 @@ def main():
             print("слишком много ошибок отправки, остановка до следующего запуска")
             break
         if important and daily["important"] >= DAILY_IMPORTANT_LIMIT:
+            stats["дневной лимит важных"] += 1
             continue  # страховка: остаётся до завтра
         if not important:
             if quiet:
+                stats["ночь (до 07:00 МСК)"] += 1
                 continue  # ночью обычные посты не публикуем, они дождутся утра
             if daily["regular"] >= DAILY_REGULAR_LIMIT or daily["total"] >= DAILY_TOTAL_LIMIT:
+                stats["дневной лимит сообщества"] += 1
                 mark(it["id"])  # лимит на сегодня, старое не копим
                 continue
         try:
@@ -2493,21 +2616,26 @@ def main():
                     fill_supercell(it)
                 except SkipItem as ex:
                     print("  пропускаю статью:", it["link"], "-", ex)
+                    stats["статья не про Brawl Stars"] += 1
                     mark(it["id"])
                     continue
                 except Exception as ex:
                     print("  не удалось загрузить статью:", it["link"], "-", ex)
+                    stats["статья не загрузилась"] += 1
                     bump(it["id"], FILL_FAILS)
                     continue
             if not important and SCAM_RE.search(f"{it.get('title', '')} {it.get('text', '')}"):
                 print("  похоже на обман с «бесплатными гемами», пропускаю:", it.get("title", it["id"]))
+                stats["похоже на обман"] += 1
                 mark(it["id"])
                 continue
             if not important and not it.get("img") and not it.get("force_link"):
+                stats["у поста нет картинки"] += 1
                 mark(it["id"])
                 continue
             if is_dup(keys_of(it), tokens_of(it.get("title", "")), important, recent):
                 print("  дубль, не публикую:", it.get("title", it["id"]))
+                stats["дубль"] += 1
                 mark(it["id"])
                 continue
             ru = llm_polish(it, important, state)
@@ -2521,18 +2649,26 @@ def main():
             sys.exit(1)
         except LowQualityImage as ex:
             print("  пропускаю (плохая картинка):", it.get("title", it["id"]), "-", ex)
+            stats["плохая картинка"] += 1
             mark(it["id"])
+            continue
+        except ImageUnavailable as ex:
+            print("  картинка пока недоступна, повторю позже:", it.get("title", it["id"]), "-", ex)
+            stats["картинка недоступна"] += 1
+            bump(it["id"], 6)
             continue
         except urllib.error.HTTPError as ex:
             if ex.code == 429:
                 print("Telegram просит подождать, остановка до следующего запуска")
                 break
-            print("  не отправлено, повторю позже:", key, "-", ex)
+            print("  не отправлено, повторю позже:", key, "-", http_err_text(ex))
+            stats["ошибка отправки"] += 1
             errors += 1
             bump(it["id"], MAX_FAILS)
             continue
         except Exception as ex:
             print("  не отправлено, повторю позже:", key, "-", ex)
+            stats["ошибка отправки"] += 1
             errors += 1
             bump(it["id"], MAX_FAILS)
             continue
@@ -2557,6 +2693,15 @@ def main():
             except Exception as ex:
                 print("  разбор баланса не получился:", ex)
 
+    try:
+        for msg in report_health(state, results, stats, sent):
+            print("предупреждение владельцу:", msg.splitlines()[0])
+    except Exception as ex:
+        print("самодиагностика не сработала:", ex)
+    ok_src = sum(1 for v in results.values() if v is not None)
+    print(f"ИТОГ: источников отвечает {ok_src} из {len(results)}; новых записей {stats['новых записей']}; "
+          f"опубликовано {sent}" + ("; отсеяно: " + ", ".join(f"{k}: {v}" for k, v in stats.most_common()
+                                                              if k != "новых записей") if len(stats) > 1 else ""))
     for job in (lambda: maybe_post_meta(state, started, force=FORCE_META),
                 lambda: maybe_post_guide(state, started, force=FORCE_GUIDE)):
         try:
