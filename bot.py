@@ -16,6 +16,9 @@ ADMIN_CHAT = os.environ.get("ADMIN_CHAT_ID") or os.environ.get("VIDEO_CHAT_ID", 
 # Публикации
 MAX_PER_RUN = 3               # максимум постов за один запуск (раз в 10 минут)
 DAILY_REGULAR_LIMIT = 8       # обычные посты сообщества в сутки
+DAILY_NEWS_LIMIT = 6          # новости из СМИ и от блогеров в сутки
+DAILY_POLL_LIMIT = 1          # опросы в сутки
+POLL_HOUR_UTC = 12            # опрос выходит после 15:00 по Москве
 DAILY_IMPORTANT_LIMIT = 25    # страховка от лавины «важных» новостей
 DAILY_TOTAL_LIMIT = 40        # всё вместе: новости, сообщество, гайд, мета, баланс
 DAILY_GUIDE_LIMIT = 1         # гайд на бойца: один в сутки
@@ -51,29 +54,49 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 # important=False -> обычный пост: картинка + текст (посты без картинки пропускаются)
 # link=True       -> у обычного поста всё равно показывать ссылку (для видео)
 # expect/reject   -> проверка названия YouTube-канала, чтобы не публиковать чужое
+_NEWS_RX = r"brawl\s?stars|бравл\s?старс|brawl\s?talk"
+_VIDEO_NEWS_RX = (r"update|new brawler|brawl talk|season|leak|tier list|balance|buff|nerf|reveal|"
+                  r"обновл|слив|новый боец|баланс|сезон")
+
+
+def _gnews(query, lang, country):
+    return ("https://news.google.com/rss/search?q=" + urllib.parse.quote(query) +
+            f"&hl={lang}&gl={country}&ceid={country}:{lang}")
+
+
+# every: как часто опрашивать источник, в минутах (0 = каждый запуск); cap: отдельный дневной лимит
 SOURCES = [
     # Блог Supercell по Brawl Stars: патчноуты, ивенты, киберспорт, сообщество
     {"name": "supercell-blog", "type": "supercell", "kind": "blog",
      "url": "https://supercell.com/en/games/brawlstars/blog/", "important": True},
     # Анонсы Supercell по Brawl Stars: коллаборации, чемпионы, большие новости
     {"name": "supercell-announcements", "type": "supercell", "kind": "announcement",
-     "url": "https://supercell.com/en/news/announcement/brawlstars/", "important": True},
+     "url": "https://supercell.com/en/news/announcement/brawlstars/", "important": True, "every": 20},
     # Выход новой версии игры в App Store (версия + заметки об обновлении)
-    {"name": "appstore-update", "type": "appstore", "app_id": "1229016807", "important": True},
+    {"name": "appstore-update", "type": "appstore", "app_id": "1229016807", "important": True, "every": 20},
     # Официальный YouTube Brawl Stars (Brawl Talk, трейлеры, анонсы)
     {"name": "yt-brawlstars", "type": "youtube", "handle": "BrawlStars", "important": True,
      "expect": "brawl stars", "reject": "esports"},
     # Официальный YouTube киберспорта Brawl Stars
     {"name": "yt-esports", "type": "youtube", "handle": "brawlstarsesports", "important": False,
-     "link": True, "expect": "esports"},
-    # Официальные посты Supercell на r/Brawlstars (проверь название метки, если пусто)
-    {"name": "reddit-official", "type": "feed", "important": True,
+     "link": True, "expect": "esports", "cap": "news", "every": 30},
+    # Новости из СМИ (Google News): русскоязычные и англоязычные издания. Картинки рисуем сами
+    {"name": "gnews-ru", "type": "gnews", "important": False, "link": True, "cap": "news", "every": 30,
+     "url": _gnews('"Brawl Stars" OR "Бравл Старс" when:3d', "ru", "RU"), "match": _NEWS_RX},
+    {"name": "gnews-en", "type": "gnews", "important": False, "link": True, "cap": "news", "every": 30,
+     "url": _gnews('"Brawl Stars" when:2d', "en", "US"), "match": _NEWS_RX},
+    # YouTube-блогеры: берём только ролики про обновления, баланс и слухи
+    {"name": "yt-lex", "type": "youtube", "channel_id": "UC4yh9rj_cPT77it63N14HQg", "important": False,
+     "link": True, "news": True, "cap": "news", "every": 30, "expect": "lex", "match": _VIDEO_NEWS_RX},
+    {"name": "yt-kairos", "type": "youtube", "handle": "KairosTime", "important": False, "link": True,
+     "news": True, "cap": "news", "every": 30, "expect": "kairos", "match": _VIDEO_NEWS_RX},
+    # Reddit опрашиваем редко: при частых запросах с серверов GitHub он отвечает 429
+    {"name": "reddit-official", "type": "feed", "important": True, "every": 30,
      "url": "https://www.reddit.com/r/Brawlstars/search.rss?q=flair%3A%22Supercell+Official%22&restrict_sr=on&sort=new"},
-    # Самое популярное за день на r/Brawlstars
-    {"name": "reddit-top", "type": "feed", "important": False, "community": True,
+    {"name": "reddit-top", "type": "feed", "important": False, "community": True, "every": 60,
      "url": "https://www.reddit.com/r/Brawlstars/top/.rss?t=day"},
-    # Слухи и утечки на r/Brawlstars (всегда с пометкой «неподтверждённая информация»)
-    {"name": "reddit-leaks", "type": "feed", "important": False, "community": True,
+    # Слухи и утечки (всегда с пометкой «неподтверждённая информация»)
+    {"name": "reddit-leaks", "type": "feed", "important": False, "community": True, "every": 90,
      "url": "https://www.reddit.com/r/Brawlstars/search.rss?q=title%3Aleak&restrict_sr=on&sort=new&t=week"},
 ]
 
@@ -168,8 +191,14 @@ def strip_html(text):
 
 
 # ---------- сеть ----------
+REDDIT_UA = "python:brawl-news-bot:3.0 (RSS reader for a Telegram news channel)"
+
+
 def get(url, headers=None, tries=2, limit=PAGE_MAX_BYTES):
     h = {"User-Agent": UA, "Accept-Language": "en-US,en;q=0.9"}
+    if "reddit.com" in url:  # Reddit требует честного User-Agent и часто режет «браузерные»
+        h["User-Agent"] = REDDIT_UA
+        h["Accept"] = "application/rss+xml, application/atom+xml;q=0.9, */*;q=0.5"
     h.update(headers or {})
     last = None
     for i in range(tries):
@@ -606,6 +635,36 @@ def parse_feed(xml_bytes):
     return items
 
 
+def parse_gnews(xml_bytes, max_age_days=3):
+    """Заголовки новостей из Google News (RSS): заголовок, издание и ссылка. Картинку рисуем сами."""
+    from email.utils import parsedate_to_datetime
+    root = ET.fromstring(xml_bytes)
+    now = datetime.datetime.now(datetime.timezone.utc)
+    items = []
+    for e in root.iter("item"):
+        title = clean(ctext(e, "title"))
+        link = ctext(e, "link")
+        guid = ctext(e, "guid") or link
+        node = e.find("source")
+        name = (node.text or "").strip() if node is not None and node.text else ""
+        if name and title.endswith(" - " + name):
+            title = title[:-(len(name) + 3)].rstrip()
+        elif not name and " - " in title:
+            head, _, tail = title.rpartition(" - ")
+            if 0 < len(tail) < 40:
+                title, name = head, tail
+        try:
+            age = (now - parsedate_to_datetime(ctext(e, "pubDate"))).total_seconds() / 86400
+            if age > max_age_days:
+                continue
+        except Exception:
+            pass
+        if title and guid:
+            items.append({"id": guid, "title": title, "link": link, "text": "", "img": "", "imgs": [], "urls": [],
+                          "author": "", "source_name": name, "news": True})
+    return items
+
+
 def metas(page):
     out = {}
     for tag in re.findall(r"<meta\b[^>]*>", page, re.I):
@@ -703,14 +762,15 @@ def yt_channel_id(handle, state):
 
 
 def fetch_youtube(src, state):
-    cid = yt_channel_id(src["handle"], state)
+    cid = src.get("channel_id") or yt_channel_id(src["handle"], state)
+    who = src.get("handle") or cid
     xml = get("https://www.youtube.com/feeds/videos.xml?channel_id=" + cid)
     name = (ET.fromstring(xml).findtext(ATOM + "title") or "").strip()
     low = name.lower()
     if (src.get("expect") and src["expect"] not in low) or \
             (src.get("reject") and src["reject"] in low):
-        state.get("yt", {}).pop(src["handle"], None)
-        raise ValueError(f"канал @{src['handle']} называется «{name}», это не тот канал")
+        state.get("yt", {}).pop(src.get("handle", ""), None)
+        raise ValueError(f"канал {who} называется «{name}», это не тот канал")
     return parse_feed(xml)
 
 
@@ -722,13 +782,27 @@ def fetch(src, state):
         items = fetch_appstore(src, state)
     elif t == "youtube":
         items = fetch_youtube(src, state)
+    elif t == "gnews":
+        items = parse_gnews(get(src["url"], limit=2 * 1024 * 1024))
     else:
-        items = parse_feed(get(src["url"]))
-    if src.get("link"):
-        for it in items:
+        try:
+            items = parse_feed(get(src["url"]))
+        except Exception:
+            if "://www.reddit.com/" not in src["url"]:
+                raise
+            # Reddit иногда отвечает 429 на основной адрес; старый интерфейс часто пускает
+            items = parse_feed(get(src["url"].replace("://www.reddit.com/", "://old.reddit.com/")))
+    if src.get("match"):
+        rx = re.compile(src["match"], re.I)
+        items = [it for it in items if rx.search(f"{it.get('title', '')} {it.get('text', '')}")]
+    for it in items:
+        if src.get("link"):
             it["force_link"] = True
-    if src.get("community"):
-        for it in items:
+        if src.get("news"):
+            it["news"] = True
+        if src.get("cap"):
+            it["cap"] = src["cap"]
+        if src.get("community"):
             it["community"] = True
             it["sub"] = "r/Brawlstars"
     return items
@@ -881,7 +955,7 @@ def item_topic(item, important=True):
     for pat, emoji, label, tag in TOPICS:
         if pat.search(blob):
             return emoji, label, tag
-    if important:
+    if important or item.get("news"):
         return DEFAULT_TOPIC
     # обычные посты сообщества: не «новости»
     if MEME_RE.search(blob):
@@ -1338,6 +1412,9 @@ def build_post(item, title, text, important, phrase=""):
     body_at = len(blocks)
     if community:
         who = f"Автор: {'u/' + item['author'].replace('u/', '') if item.get('author') else 'игрок'} · {item.get('sub', 'r/Brawlstars')}"
+        blocks.append((who, f"<i>{esc(who)}</i>"))
+    elif item.get("source_name"):
+        who = f"Источник: {item['source_name']}"
         blocks.append((who, f"<i>{esc(who)}</i>"))
     if phrase:
         blocks.append((phrase, f"<i>{esc(phrase)}</i>"))
@@ -2424,7 +2501,7 @@ def maybe_post_guide(state, started, force=False):
 
 
 # ---------- самодиагностика: бот сам пишет, если что-то не так ----------
-HEALTH_SRC_FAILS = 6        # источник молчит столько запусков подряд (около часа), и бот предупреждает
+HEALTH_SRC_FAILS = 4        # источник не ответил столько раз подряд, и бот предупреждает
 HEALTH_SILENCE_H = 12       # столько часов без единого поста новостей или сообщества, и бот предупреждает
 HEALTH_REPEAT_H = 24        # одно и то же предупреждение не чаще раза в сутки
 
@@ -2477,13 +2554,66 @@ def report_health(state, results, stats, sent, now_ts=None):
     return sent_msgs
 
 
+# ---------- опрос дня ----------
+GENERIC_POLLS = [
+    ("Что вам интересно видеть в канале больше всего?",
+     ["Новости и обновления", "Мета и разборы", "Гайды на бойцов", "Арты и мемы"]),
+    ("Как часто вы играете в Brawl Stars?",
+     ["Каждый день", "Несколько раз в неделю", "Редко", "Захожу только за наградами"]),
+]
+
+
+def poll_for_today(state, today):
+    """Опрос по свежей мете (кто сильнее, кого берут, кто нравится) или общий, если меты нет."""
+    meta = state.get("meta") or {}
+    rows = bot_rank(meta) if meta.get("date") == today else []
+    day = datetime.date.fromisoformat(today).toordinal()
+    if len(rows) >= 6:
+        top = [r[0] for r in rows[:4]]
+        kind = day % 3
+        if kind == 0:
+            return "Кто, по-вашему, сильнейший боец сегодня?", top + ["Другой боец"]
+        if kind == 1:
+            return "Кого вы чаще всего берёте в ранговые бои?", top + ["Другого бойца"]
+        pool = [r[0] for r in rows[:12]]
+        return "Какой боец вам нравится больше всего?", random.Random(day).sample(pool, 4) + ["Другой боец"]
+    return GENERIC_POLLS[day % len(GENERIC_POLLS)]
+
+
+def bot_rank(meta):
+    try:
+        return rank_rows(meta.get("stats") or {}, META_MIN_PICKS)
+    except Exception:
+        return []
+
+
+def maybe_post_poll(state, started, force=False):
+    """Раз в сутки публикует опрос: это живой контент, которому не нужны внешние источники."""
+    now = datetime.datetime.now(datetime.timezone.utc)
+    today = now.strftime("%Y-%m-%d")
+    daily = state.setdefault("daily", {})
+    if not force:
+        if state.get("poll_posted") == today or now.hour < POLL_HOUR_UTC or in_quiet_hours(now):
+            return False
+        if daily.get("polls", 0) >= DAILY_POLL_LIMIT:
+            return False
+    question, options = poll_for_today(state, today)
+    tg_json("sendPoll", {"chat_id": CHAT, "question": question[:300],
+                         "options": [{"text": o[:100]} for o in options][:10],  # формат InputPollOption из актуального Bot API
+                         "is_anonymous": True})
+    state["poll_posted"] = today
+    count_post(state, "poll")
+    print("опрос опубликован:", question)
+    return True
+
+
 # ---------- состояние ----------
 def count_post(state, kind):
     """Считает пост в суточных лимитах: kind = regular | important | guide | meta | balance."""
     d = state.setdefault("daily", {})
     d["total"] = d.get("total", 0) + 1
-    if kind in ("regular", "important", "guide"):
-        key = {"regular": "regular", "important": "important", "guide": "guides"}[kind]
+    if kind in ("regular", "important", "guide", "news", "poll"):
+        key = {"regular": "regular", "important": "important", "guide": "guides", "news": "news", "poll": "polls"}[kind]
         d[key] = d.get(key, 0) + 1
 
 
@@ -2495,7 +2625,8 @@ def in_quiet_hours(now):
 
 def load_state():
     state = {"seen": [], "sources": [], "daily": {}, "yt": {}, "recent": [], "fails": {}, "phrases": [],
-             "meta": {}, "meta_posted": "", "meta_try": 0, "classes": {}, "guided": {}, "guide_try": 0}
+             "meta": {}, "meta_posted": "", "meta_try": 0, "classes": {}, "guided": {}, "guide_try": 0,
+             "fetched": {}, "backoff": {}, "srcfail": {}, "poll_posted": ""}
     if os.path.exists(STATE_FILE):
         try:
             data = json.load(open(STATE_FILE))
@@ -2544,7 +2675,7 @@ def main():
     today = now.strftime("%Y-%m-%d")
     if state["daily"].get("date") != today:
         state["daily"] = {"date": today}
-    for k in ("regular", "important", "total", "guides", "llm"):
+    for k in ("regular", "important", "total", "guides", "llm", "news", "polls"):
         state["daily"].setdefault(k, 0)
     daily = state["daily"]
 
@@ -2564,10 +2695,32 @@ def main():
         recent.append({"k": sorted(keys_of(item)), "t": sorted(tokens_of(item.get("title", ""))),
                        "ts": time.time(), "imp": bool(important)})
 
-    results = fetch_all(SOURCES, state)
+    # опрашиваем только те источники, до которых дошла очередь; сбойные откладываем с нарастающей паузой
+    fetched, backoff = state.setdefault("fetched", {}), state.setdefault("backoff", {})
+    srcfail = state.setdefault("srcfail", {})
+    t_now = time.time()
+
+    def due(src):
+        if t_now < backoff.get(src["name"], 0):
+            return False
+        every = src.get("every", 0) * 60
+        return not every or t_now - fetched.get(src["name"], 0) >= every
+    due_sources = [sc for sc in SOURCES if due(sc)]
+    results = fetch_all(due_sources, state)
+    for sc in due_sources:
+        name = sc["name"]
+        if results.get(name) is None:
+            srcfail[name] = srcfail.get(name, 0) + 1
+            backoff[name] = t_now + min(240, (sc.get("every") or 10) * 2 ** (srcfail[name] - 1)) * 60
+        else:
+            fetched[name] = t_now
+            srcfail[name] = 0
+            backoff.pop(name, None)
     queue = []
     for src in SOURCES:
         key = src["name"]
+        if key not in results:
+            continue  # ещё не время или источник в паузе после сбоя
         items = results.get(key)
         if items is None:
             continue
@@ -2606,8 +2759,10 @@ def main():
             if quiet:
                 stats["ночь (до 07:00 МСК)"] += 1
                 continue  # ночью обычные посты не публикуем, они дождутся утра
-            if daily["regular"] >= DAILY_REGULAR_LIMIT or daily["total"] >= DAILY_TOTAL_LIMIT:
-                stats["дневной лимит сообщества"] += 1
+            cap = it.get("cap", "regular")
+            limit = {"news": DAILY_NEWS_LIMIT}.get(cap, DAILY_REGULAR_LIMIT)
+            if daily.get(cap, 0) >= limit or daily["total"] >= DAILY_TOTAL_LIMIT:
+                stats["дневной лимит " + ("новостей" if cap == "news" else "сообщества")] += 1
                 mark(it["id"])  # лимит на сегодня, старое не копим
                 continue
         try:
@@ -2677,7 +2832,7 @@ def main():
         remember(it, important)
         state["phrases"].append(phrase)
         sent += 1
-        count_post(state, "important" if important else "regular")
+        count_post(state, "important" if important else it.get("cap", "regular"))
         save_state(state)  # сразу после каждой отправки
         time.sleep(PAUSE)
         if it.get("_page"):  # к заметкам об обновлении добавляем разбор баланса
@@ -2703,7 +2858,8 @@ def main():
           f"опубликовано {sent}" + ("; отсеяно: " + ", ".join(f"{k}: {v}" for k, v in stats.most_common()
                                                               if k != "новых записей") if len(stats) > 1 else ""))
     for job in (lambda: maybe_post_meta(state, started, force=FORCE_META),
-                lambda: maybe_post_guide(state, started, force=FORCE_GUIDE)):
+                lambda: maybe_post_guide(state, started, force=FORCE_GUIDE),
+                lambda: maybe_post_poll(state, started)):
         try:
             job()
         except FatalError as ex:
