@@ -11,7 +11,7 @@
          python make_video.py demo     тестовый ролик (проверка озвучки, сборки и доставки)
 Нужны: ffmpeg, Pillow, edge-tts (запасной gTTS), файл bot.py рядом.
 """
-import os, sys, io, re, json, time, math, wave, array, shutil, subprocess, tempfile, datetime, asyncio, uuid, random
+import os, sys, io, re, json, time, math, wave, array, shutil, subprocess, tempfile, datetime, asyncio, uuid, random, itertools
 import urllib.request, urllib.parse, urllib.error
 
 import bot
@@ -20,7 +20,7 @@ import bot
 W, H, FPS = 1080, 1920, 24       # 24 кадра в секунду: плавно и быстро собирается
 VIDEO_STATE = "videos.json"
 VIDEO_DAILY_LIMIT = 2            # не больше двух роликов в сутки: так канал не выглядит спамом
-MAX_VIDEO_SEC = 50               # короткие ролики досматривают чаще
+MAX_VIDEO_SEC = 58               # до минуты: длиннее ролики досматривают реже
 MIN_SLIDE_SEC = 1.6              # быстрый монтаж: кадры сменяются каждые 2-3 секунды
 CTA_MIN_SEC = 5.0                # финальный кадр с QR держим дольше, чтобы успели навести камеру
 PAD_SEC = 0.12                   # пауза после фразы
@@ -29,7 +29,9 @@ OUT_DIR = "out"
 MUSIC_DIR = "music"              # сюда клади СВОИ треки или музыку без авторских прав
 MUSIC_VOLUME, SFX_VOLUME = 0.12, 0.30
 TTS_VOICE = os.environ.get("TTS_VOICE") or "ru-RU-DmitryNeural"
-TTS_RATE = os.environ.get("TTS_RATE") or "+22%"      # быстрее обычного: ролик должен звучать бодро
+TTS_RATE = os.environ.get("TTS_RATE") or "+12%"      # чуть бодрее обычного, но имена и цифры ещё разборчивы
+TTS_PITCH = os.environ.get("TTS_PITCH") or "+0Hz"
+TTS_STRESS = os.environ.get("TTS_STRESS", "")        # "acute": ставить знак ударения (проверяется командой voicetest)
 GTTS_TEMPO = 1.25                # запасной голос Google ускоряем сами
 VIDEO_CHAT_ID = os.environ.get("VIDEO_CHAT_ID", "")  # личный чат, куда бот пришлёт готовые ролики
 CTA_HANDLE = os.environ.get("VIDEO_CTA_HANDLE") or (bot.CHAT if bot.CHAT.startswith("@") else "")
@@ -283,26 +285,108 @@ def plural(n, one, few, many):
     return {1: one, 2: few, 3: few, 4: few}.get(n % 10, many)
 
 
+_ONES = ["ноль", "один", "два", "три", "четыре", "пять", "шесть", "семь", "восемь", "девять", "десять", "одиннадцать",
+         "двенадцать", "тринадцать", "четырнадцать", "пятнадцать", "шестнадцать", "семнадцать", "восемнадцать", "девятнадцать"]
+_TENS = ["", "", "двадцать", "тридцать", "сорок", "пятьдесят", "шестьдесят", "семьдесят", "восемьдесят", "девяносто"]
+_HUND = ["", "сто", "двести", "триста", "четыреста", "пятьсот", "шестьсот", "семьсот", "восемьсот", "девятьсот"]
+
+
+def num_words(n, fem=False):
+    """Число прописью (до миллиона): голос не путает падежи и не читает цифры по-английски."""
+    n = int(n)
+    if n < 0:
+        return "минус " + num_words(-n, fem)
+    if n < 20:
+        w = _ONES[n]
+        return {"один": "одна", "два": "две"}.get(w, w) if fem else w
+    if n < 100:
+        t, o = divmod(n, 10)
+        return _TENS[t] + (" " + num_words(o, fem) if o else "")
+    if n < 1000:
+        h, r = divmod(n, 100)
+        return _HUND[h] + (" " + num_words(r, fem) if r else "")
+    if n < 1_000_000:
+        th, r = divmod(n, 1000)
+        return num_words(th, True) + " " + plural(th, "тысяча", "тысячи", "тысяч") + (" " + num_words(r, fem) if r else "")
+    return str(n)
+
+
+def decimal_words(ip, fp):
+    """53,4 -> «пятьдесят три целых четыре десятых»."""
+    fp = fp[:2]
+    i, f = int(ip), int(fp)
+    unit = ("десятая", "десятых") if len(fp) == 1 else ("сотая", "сотых")
+    whole = "целая" if i % 10 == 1 and i % 100 != 11 else "целых"
+    part = unit[0] if f % 10 == 1 and f % 100 != 11 else unit[1]
+    return f"{num_words(i, True)} {whole} {num_words(f, True)} {part}"
+
+
+# термины игры: голос читает их по-русски (регистр важен только у сокращений)
+TERMS = (("Brawl Stars", "Бравл Старс"), ("Brawl Pass", "Бравл Пасс"), ("Supercell", "Суперселл"), ("TikTok", "Тик Ток"),
+         ("Telegram", "Телеграм"), ("YouTube", "Ютуб"), ("Hypercharge", "Гиперзаряд"), ("Star Power", "Звёздная сила"),
+         ("Gem Grab", "Гем Граб"), ("Brawl Ball", "Бравл Бол"), ("Showdown", "Шоудаун"), ("Heist", "Хейст"),
+         ("Bounty", "Баунти"), ("Hot Zone", "Хот Зон"), ("Knockout", "Нокаут"), ("Trophy Road", "Трофи Роуд"),
+         ("Power League", "Пауэр Лига"), ("Ranked", "Ранкед"), ("QR", "кью ар"), ("HP", "хэ пэ"), ("FPS", "эф пэ эс"),
+         ("DPS", "дэ пэ эс"), ("UI", "ю ай"), ("OK", "окей"), ("PvP", "пи ви пи"))
+_CASE_SENS = {"QR", "HP", "FPS", "DPS", "UI", "OK", "PvP"}
+_LETTER = dict(zip("ABCDEFGHIJKLMNOPQRSTUVWXYZ", ["а", "бэ", "цэ", "дэ", "е", "эф", "гэ", "аш", "и", "джей", "ка", "эль", "эм",
+                                                  "эн", "о", "пэ", "кью", "эр", "эс", "тэ", "у", "вэ", "дабл ю", "икс", "игрек", "зэт"]))
+# ё всегда ударная: переводчик её теряет, а голос без неё иногда ставит ударение не туда
+_YO = {"еще": "ещё", "звездная": "звёздная", "звездной": "звёздной", "звездную": "звёздную", "звезды": "звёзды",
+       "звезд": "звёзд", "идет": "идёт", "берет": "берёт", "несет": "несёт", "ведет": "ведёт",
+       "зеленый": "зелёный", "зеленая": "зелёная", "тяжелый": "тяжёлый", "тяжелая": "тяжёлая", "огнем": "огнём",
+       "своем": "своём", "ее": "её", "поведет": "поведёт", "придет": "придёт", "уйдет": "уйдёт", "лед": "лёд"}
+# слова, где голос чаще всего ошибается в ударении (знак ударения ставится только при TTS_STRESS=acute)
+STRESS = {"мета": "ме́та", "гайд": "га́йд", "гаджет": "га́джет", "пикрейт": "пикре́йт", "винрейт": "винре́йт",
+          "бафф": "ба́фф", "нерф": "не́рф", "донат": "дона́т", "процента": "проце́нта", "процентов": "проце́нтов",
+          "мортис": "мо́ртис", "эдгар": "э́дгар", "кроу": "кро́у", "шелли": "ше́лли", "спайк": "спа́йк",
+          "пайпер": "па́йпер", "эмбер": "э́мбер", "леон": "лео́н", "колетт": "коле́тт", "поко": "по́ко",
+          "нита": "ни́та", "рико": "ри́ко", "тара": "та́ра", "берри": "бе́рри"}
+
+
+def _map_words(t, table):
+    def one(m):
+        w = m.group(0)
+        r = table.get(w.lower())
+        if not r:
+            return w
+        if len(w) > 1 and w.isupper():
+            return r.upper()
+        return r[:1].upper() + r[1:] if w[:1].isupper() else r
+    return re.sub(r"[А-Яа-яЁё]+", one, t)
+
+
 def spoken(text):
-    """Текст для голоса: имена и числа в удобном для озвучки виде (на экране остаётся оригинал)."""
+    """Текст для голоса: имена, термины и числа в удобном для озвучки виде (на экране остаётся оригинал)."""
     t = text
     for name in sorted(set(list(NAME_SAY) + list(bot.BRAWLERS)), key=len, reverse=True):
         say = NAME_SAY.get(name) or translit(name)
         t = re.sub(r"(?<![\w-])" + re.escape(name) + r"(?![\w-])", say, t)
-    for lat, cyr in (("Brawl Stars", "Бравл Старс"), ("Brawl Pass", "Бравл Пасс"), ("Supercell", "Суперселл"),
-                     ("TikTok", "Тик Ток"), ("Telegram", "Телеграм"), ("YouTube", "Ютуб"), ("QR", "кью ар")):
-        t = re.sub(re.escape(lat), cyr, t, flags=re.I if lat != "QR" else 0)
+    for lat, cyr in TERMS:
+        t = re.sub(r"(?<!\w)" + re.escape(lat) + r"(?!\w)", cyr, t, flags=0 if lat in _CASE_SENS else re.I)
+
+    def latin(m):
+        w = m.group(0)
+        if w.isupper() and 2 <= len(w) <= 4:
+            return " ".join(_LETTER.get(c, c) for c in w)  # сокращение читаем по буквам
+        return translit(w.replace("'", "").replace("-", ""))
+    t = re.sub(r"[A-Za-z][A-Za-z'\-]*", latin, t)  # всё, что осталось латиницей, голос не должен читать по-английски
 
     def pct(m):
-        num = m.group(1)
+        num = m.group(1).replace(",", ".")
         if re.fullmatch(r"\d+", num):
-            return f"{num} " + plural(int(num), "процент", "процента", "процентов")
-        return f"{num} процента"
+            n = int(num)
+            return num_words(n) + " " + plural(n, "процент", "процента", "процентов")
+        ip, fp = num.split(".")
+        return decimal_words(ip, fp) + " процента"
     t = re.sub(r"(\d+(?:[.,]\d+)?)\s*%", pct, t)
     t = re.sub(r"п\.\s?п\.", "процентных пунктов", t)
     t = re.sub(r"[#@][\w_]+", "", t)
     t = re.sub(r"[^\w\s.,!?:;()\-—«»\"'…]", " ", t)
-    return re.sub(r"\s+", " ", t).strip()
+    t = _map_words(re.sub(r"\s+", " ", t).strip(), _YO)
+    if TTS_STRESS == "acute":
+        t = _map_words(t, STRESS)
+    return t
 
 
 # ===================== ОЗВУЧКА И ЗВУК =====================
@@ -317,7 +401,11 @@ def tts(text, out_path):
         import edge_tts
 
         async def run_edge():
-            await edge_tts.Communicate(text, TTS_VOICE, rate=TTS_RATE).save(out_path)
+            try:
+                comm = edge_tts.Communicate(text, TTS_VOICE, rate=TTS_RATE, pitch=TTS_PITCH)
+            except TypeError:  # старая версия edge-tts без pitch
+                comm = edge_tts.Communicate(text, TTS_VOICE, rate=TTS_RATE)
+            await comm.save(out_path)
 
         for attempt in range(3):
             try:
@@ -368,7 +456,8 @@ _TRIM = ("silenceremove=start_periods=1:start_threshold=-48dB:start_silence=0.02
 def clean_voice(src, dst):
     """Обрезает тишину в начале и конце фразы (ролик не тянется) и при необходимости ускоряет голос."""
     tempo = GTTS_TEMPO if _ENGINE.get(src) == "gtts" else 1.0
-    af = _TRIM + (f",atempo={tempo}" if tempo != 1.0 else "")
+    af = _TRIM + ",silenceremove=stop_periods=-1:stop_duration=0.5:stop_threshold=-45dB:stop_silence=0.22"
+    af += f",atempo={tempo}" if tempo != 1.0 else ""
     run(["ffmpeg", "-y", "-loglevel", "error", "-i", src, "-af", af, "-ar", "44100", "-ac", "2", dst])
     return dst
 
@@ -592,7 +681,11 @@ def make_bubble(text, max_w=640):
     """Облачко с репликой справа от ведущего (хвостик слева)."""
     Image, ImageDraw = bot.Image, bot.ImageDraw
     probe = ImageDraw.Draw(Image.new("RGBA", (10, 10)))
-    f, lines = bot._fit_lines(probe, text, max_w - 70, 330, start=50, minimum=30, max_lines=6)
+    fit = fit_exact(probe, text, max_w - 70, 330, 50, 28, 7)
+    if fit is None:
+        print("реплика не помещается в пузырь, пузырь пропущен:", text[:50])
+        return None
+    f, lines = fit
     lh = int(f.size * 1.22)
     w, h = max_w, lh * len(lines) + 70
     img = Image.new("RGBA", (w + 36, h), (0, 0, 0, 0))
@@ -670,17 +763,120 @@ def L_hero(name, chip1="", chip2="", portrait=None, rank=None):
     return layer
 
 
+TEXT_W, TEXT_H, TEXT_START, TEXT_MIN, TEXT_LINES = 880, 620, 70, 46, 10
+DIM_COLOR, LIT_COLOR = (196, 190, 232, 255), (255, 255, 255, 255)
+
+
+def fit_exact(draw, text, max_w=TEXT_W, max_h=TEXT_H, start=TEXT_START, minimum=TEXT_MIN, max_lines=TEXT_LINES):
+    """Подбирает шрифт так, чтобы ВЕСЬ текст поместился. Если не помещается даже мелким, возвращает None (текст не режем)."""
+    size = start
+    while size >= minimum:
+        f = bot.card_font(size)
+        lines = bot._wrap(draw, text, f, max_w)
+        if (len(lines) <= max_lines and len(lines) * int(size * 1.26) <= max_h
+                and all(draw.textlength(l, font=f) <= max_w for l in lines)):
+            return f, lines
+        size -= 4
+    return None
+
+
+def _probe():
+    return bot.ImageDraw.Draw(bot.Image.new("RGBA", (10, 10)))
+
+
+def text_fits(text):
+    return fit_exact(_probe(), text) is not None
+
+
+def _split_words(p, fits):
+    """Режет длинное предложение по словам, по возможности после запятой, ничего не теряя."""
+    words, out, cur = p.split(), [], []
+    for w in words:
+        if cur and not fits(" ".join(cur + [w])):
+            cut = next((i for i in range(len(cur) - 1, len(cur) // 2 - 1, -1) if cur[i].endswith((",", ";", ":", "—"))), None)
+            if cut is not None and cut < len(cur) - 1:
+                out.append(" ".join(cur[:cut + 1]))
+                cur = cur[cut + 1:]
+            else:
+                out.append(" ".join(cur))
+                cur = []
+        cur.append(w)
+    if cur:
+        out.append(" ".join(cur))
+    return out
+
+
+def chunk_text(text, fits=None):
+    """Делит текст на части, каждая из которых целиком помещается на экран. Слова не теряются (проверяется тестом)."""
+    fits = fits or text_fits
+    text = re.sub(r"\s+", " ", (text or "").strip())
+    if not text:
+        return []
+    if fits(text):
+        return [text]
+    pieces = []
+    for sent in re.split(r"(?<=[.!?…])\s+", text):
+        pieces.extend([sent] if fits(sent) else _split_words(sent, fits))
+    out, cur = [], ""
+    for piece in pieces:
+        cand = (cur + " " + piece).strip()
+        if cur and not fits(cand):
+            out.append(cur)
+            cur = piece
+        else:
+            cur = cand
+    if cur:
+        out.append(cur)
+    if len(out) > 1 and len(out[-1].split()) <= 2:  # одинокие слова в хвосте выглядят плохо: добавляем к предыдущей части
+        merged = out[-2] + " " + out[-1]
+        if fits(merged):
+            out[-2:] = [merged]
+    return out
+
+
 def L_text(heading, body, accent=ORANGE):
+    """Слой с текстом. Каждое слово рисуется отдельно (приглушённым цветом), координаты слов лежат в layer.words
+    для подсветки в такт голосу. Если текст не влезает, он НЕ обрезается: заранее его делит chunk_text."""
     layer = new_layer()
     chip(layer, W // 2, 210, heading, accent, size=60)
     d = bot.ImageDraw.Draw(layer)
     d.rounded_rectangle((50, 350, W - 50, 1060), radius=56, fill=(14, 6, 50, 205), outline=accent + (255,), width=6)
-    f, lines = bot._fit_lines(d, body, 880, 600, start=70, minimum=38, max_lines=9)
+    fit = fit_exact(d, body)
+    if fit is None:  # крайний случай (одно очень длинное слово): мельче и больше строк
+        fit = fit_exact(d, body, TEXT_W, TEXT_H + 40, 40, 28, 14) or bot._fit_lines(d, body, TEXT_W, TEXT_H, start=40, minimum=28, max_lines=14)
+        print("текст не влез в обычную рамку, взят мелкий шрифт:", body[:60])
+    f, lines = fit
     lh = int(f.size * 1.26)
     y0 = 705 - lh * len(lines) // 2
+    words = []
     for i, line in enumerate(lines):
-        d.text((W // 2, y0 + i * lh + lh // 2), line, font=f, fill=(255, 255, 255, 255), anchor="mm")
+        yc = y0 + i * lh + lh // 2
+        x = W / 2 - d.textlength(line, font=f) / 2
+        parts = line.split(" ")
+        for j, word in enumerate(parts):
+            wx = x + d.textlength(" ".join(parts[:j]) + (" " if j else ""), font=f)
+            d.text((wx, yc), word, font=f, fill=DIM_COLOR, anchor="lm")
+            words.append({"word": word, "x": wx, "y": yc, "font": f})
+    layer.words = words
     return layer
+
+
+_GID = itertools.count(1)
+
+
+def text_specs(heading, body, accent=ORANGE, priority=5, say_first=""):
+    """Слайды с текстом: если не помещается на один экран, делится на несколько (слова не теряются).
+    Озвучивается ровно то, что написано на экране (say_first проговаривается только перед первой частью)."""
+    chunks = chunk_text(body)
+    gid = f"t{next(_GID)}"
+    out = []
+    for i, ch in enumerate(chunks):
+        head = heading if len(chunks) == 1 else f"{heading} {i + 1}/{len(chunks)}"
+        layer = L_text(head, ch, accent)
+        lead = say_first if i == 0 else ""
+        out.append({"layer": layer, "speech": (lead + " " + ch).strip(), "lead": lead, "caption": "",
+                    "priority": priority, "group": gid, "words": layer.words, "accent": accent, "sfx": "pop"})
+    return out
 
 
 def L_cta(handle, qr_url):
@@ -713,6 +909,9 @@ def _crop_layer(layer):
     return layer.crop(box), (box[0], box[1])
 
 
+ENTRY = [(0, 70), (-520, 0), (520, 0), (0, -130)]   # откуда «влетает» слайд: снизу, слева, справа, сверху
+
+
 def render_frames(slides, bg, particles, sprites, total):
     """Кадры ролика: плывущий фон и частицы, появление слайда «с отскоком», дышащий ведущий, пузырь с репликой."""
     Image, ImageDraw = bot.Image, bot.ImageDraw
@@ -720,15 +919,22 @@ def render_frames(slides, bg, particles, sprites, total):
     ImageDraw.Draw(top).text((54, 78), "NEW BRAWL NEWS", font=bot.card_font(44), fill=(255, 255, 255, 255), anchor="lm",
                              stroke_width=4, stroke_fill=DARK + (255,))
     done = 0
+    white = Image.new("RGB", (W, H), (255, 255, 255))
     for si, sl in enumerate(slides):
         n = max(1, round(sl["dur"] * FPS))
         content, (cx, cy) = sl["content"]
         bubble = sl.get("bubble")
+        kar = sl.get("karaoke")
+        tint = Image.new("RGB", (W, H), sl.get("accent") or PURPLE)
+        ent = ENTRY[sl.get("anim", 0) % len(ENTRY)]
         for k in range(n):
             gt = (done + k) / FPS
             ox = int(110 + 100 * math.sin(gt * 0.55))
             oy = int(160 + 130 * math.cos(gt * 0.40))
-            frame = bg.crop((ox, oy, ox + W, oy + H))
+            if k < 6 and si > 0:  # короткая «тряска камеры» при смене слайда
+                ox += int(16 * math.sin(k * 3.3) * (1 - k / 6))
+                oy += int(12 * math.cos(k * 2.7) * (1 - k / 6))
+            frame = Image.blend(bg.crop((ox, oy, ox + W, oy + H)), tint, 0.13)  # фон слегка окрашивается цветом слайда
             for p in particles:
                 py = (p["y"] - p["v"] * gt) % (H + 260) - 130
                 px = p["x"] + p["sway"] * math.sin(gt * 0.9 + p["ph"])
@@ -742,11 +948,22 @@ def render_frames(slides, bg, particles, sprites, total):
                 a = 0.35 + 0.65 * min(1.0, pr * 1.6)
                 if a < 1.0:
                     lay.putalpha(lay.split()[3].point(lambda v, a=a: int(v * a)))
-                x = cx + (content.width - lay.width) // 2
-                y = cy + (content.height - lay.height) // 2 + int((1 - e) * 70)
+                x = cx + (content.width - lay.width) // 2 + int((1 - e) * ent[0])
+                y = cy + (content.height - lay.height) // 2 + int((1 - e) * ent[1])
                 frame.paste(lay, (x, y), lay)
+            elif kar:
+                frame.paste(content, (cx, cy), content)  # текст стоит ровно: поверх него подсвечиваются слова
+                tt = (k + 0.5) / FPS
+                for wd in kar:
+                    if tt >= wd["t1"]:
+                        frame.paste(wd["lit"], (wd["px"], wd["py"]), wd["lit"])
+                    elif tt >= wd["t0"]:
+                        frame.paste(wd["cur"], (wd["cx"], wd["cy"]), wd["cur"])
             else:
-                frame.paste(content, (cx, cy + int(8 * math.sin(gt * 2.4))), content)
+                zoom = 1 + 0.05 * min(1.0, (k - POP_FRAMES) / max(1, n - POP_FRAMES))  # медленный наезд камеры
+                lay = content.resize((int(content.width * zoom), int(content.height * zoom)), Image.BILINEAR)
+                frame.paste(lay, (cx + (content.width - lay.width) // 2, cy + (content.height - lay.height) // 2
+                                  + int(8 * math.sin(gt * 2.4))), lay)
             # ведущий
             blink = 1 if (gt % 3.3) < 0.15 else 0
             mouth = sl["mouth"][k] if k < len(sl["mouth"]) else 0
@@ -765,6 +982,8 @@ def render_frames(slides, bg, particles, sprites, total):
                 else:
                     bb = bubble
                 frame.paste(bb, (360, 1100 + (bubble.height - bb.height) // 2), bb)
+            if si > 0 and k < 3:  # вспышка на склейке
+                frame = Image.blend(frame, white, 0.30 - 0.10 * k)
             frame.paste(top, (0, 0), top)
             ImageDraw.Draw(frame).rectangle((0, 0, int(W * (done + k + 1) / max(1, total)), 12), fill=YELLOW)
             yield frame.tobytes()
@@ -799,12 +1018,23 @@ def _concat_wavs(parts, workdir, name):
     return out
 
 
+SFX_MAKERS = {
+    "whoosh": (["-f", "lavfi", "-i", "anoisesrc=d=0.45:c=pink:r=44100"],
+               "highpass=f=500,lowpass=f=7000,afade=t=in:d=0.18,afade=t=out:st=0.2:d=0.25,volume=0.8"),
+    "pop": (["-f", "lavfi", "-i", "sine=frequency=760:duration=0.16:sample_rate=44100"],
+            "afade=t=in:d=0.005,afade=t=out:st=0.03:d=0.13,volume=0.9"),
+    "ding": (["-f", "lavfi", "-i", "sine=frequency=1175:duration=0.55:sample_rate=44100"],
+             "afade=t=in:d=0.005,afade=t=out:st=0.05:d=0.5,volume=0.7"),
+}
+
+
 def build_audio_tracks(slides, workdir):
-    """Две дорожки по слайдам: голос (подогнан по длине слайда) и звук перехода «вжух» в начале каждого."""
-    whoosh = os.path.join(workdir, "whoosh.wav")
-    run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "anoisesrc=d=0.45:c=pink:r=44100",
-         "-af", "highpass=f=500,lowpass=f=7000,afade=t=in:d=0.18,afade=t=out:st=0.2:d=0.25,volume=0.8",
-         "-ac", "2", whoosh])
+    """Две дорожки по слайдам: голос (подогнан по длине слайда) и звук перехода (разный по типу слайда) в начале каждого."""
+    kinds = {}
+    for name, (src, af) in SFX_MAKERS.items():
+        path = os.path.join(workdir, f"sfx_{name}.wav")
+        run(["ffmpeg", "-y", "-loglevel", "error"] + src + ["-af", af, "-ar", "44100", "-ac", "2", path])
+        kinds[name] = path
     voice_parts, sfx_parts = [], []
     for i, sl in enumerate(slides):
         v = os.path.join(workdir, f"vseg{i}.wav")
@@ -814,27 +1044,66 @@ def build_audio_tracks(slides, workdir):
         else:
             run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
                  "-t", f"{sl['dur']:.3f}", v])
-        s = os.path.join(workdir, f"sseg{i}.wav")
-        run(["ffmpeg", "-y", "-loglevel", "error", "-i", whoosh, "-af", "apad", "-t", f"{sl['dur']:.3f}",
-             "-ar", "44100", "-ac", "2", s])
+        s_ = os.path.join(workdir, f"sseg{i}.wav")
+        run(["ffmpeg", "-y", "-loglevel", "error", "-i", kinds.get(sl.get("sfx"), kinds["whoosh"]), "-af", "apad",
+             "-t", f"{sl['dur']:.3f}", "-ar", "44100", "-ac", "2", s_])
         voice_parts.append(v)
-        sfx_parts.append(s)
+        sfx_parts.append(s_)
     return _concat_wavs(voice_parts, workdir, "voice"), _concat_wavs(sfx_parts, workdir, "sfx")
+
+
+LOUDNORM = "loudnorm=I=-14:TP=-1.5:LRA=11"   # стандартная громкость для соцсетей: не тише и не громче чужих роликов
 
 
 def mux(video, voice, sfx, music, total, out_path):
     cmd = ["ffmpeg", "-y", "-loglevel", "error", "-i", video, "-i", voice, "-i", sfx]
-    flt = f"[2:a]volume={SFX_VOLUME}[s];[1:a][s]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[v]"
+    flt = (f"[1:a]acompressor=threshold=-20dB:ratio=3:attack=5:release=80[vc];[2:a]volume={SFX_VOLUME}[s];"
+           "[vc][s]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[v]")
     if music:
         cmd += ["-stream_loop", "-1", "-i", music]
-        flt += (f";[3:a]volume={MUSIC_VOLUME},afade=t=in:d=1,afade=t=out:st={max(0, total - 1.5):.2f}:d=1.5[m];"
-                "[v][m]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[a]")
-        out_label = "[a]"
+        flt += (f";[v]asplit=2[v1][v2];[3:a]volume={MUSIC_VOLUME * 1.8:.3f},afade=t=in:d=1,afade=t=out:st={max(0, total - 1.5):.2f}:d=1.5[m];"
+                "[m][v2]sidechaincompress=threshold=0.03:ratio=9:attack=15:release=400[md];"
+                f"[v1][md]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,{LOUDNORM}[a]")
     else:
-        out_label = "[v]"
-    cmd += ["-filter_complex", flt, "-map", "0:v", "-map", out_label, "-c:v", "copy", "-c:a", "aac", "-b:a", "160k",
+        flt += f";[v]{LOUDNORM}[a]"
+    cmd += ["-filter_complex", flt, "-map", "0:v", "-map", "[a]", "-c:v", "copy", "-c:a", "aac", "-b:a", "160k",
             "-t", f"{total:.3f}", "-movflags", "+faststart", out_path]
     run(cmd)
+
+
+def word_times(words, lead, span):
+    """Когда звучит каждое слово: время делится пропорционально длине произносимого слова и паузам после знаков."""
+    def weight(w):
+        extra = 3.0 if w.endswith((",", ";", ":")) else 6.0 if w.endswith((".", "!", "?", "…")) else 0.0
+        return max(1.0, len(spoken(w))) + extra
+    ws = [weight(w["word"]) for w in words]
+    lw = (len(spoken(lead)) + 4.0) if lead else 0.0
+    total = (lw + sum(ws)) or 1.0
+    t, out = span * lw / total, []
+    for w in ws:
+        out.append((t, t + span * w / total))
+        t += span * w / total
+    return out
+
+
+def build_karaoke(words, times):
+    """Спрайты для подсветки: произнесённое слово белое, текущее на жёлтой плашке (как в субтитрах TikTok).
+    Размер букв не меняется, поэтому слова точно совпадают с текстом под ними."""
+    Image, ImageDraw = bot.Image, bot.ImageDraw
+    probe, out = _probe(), []
+    for w, (t0, t1) in zip(words, times):
+        f = w["font"]
+        tw, th = int(probe.textlength(w["word"], font=f)) + 8, int(f.size * 1.5)
+        lit = Image.new("RGBA", (tw, th), (0, 0, 0, 0))
+        ImageDraw.Draw(lit).text((4, th // 2), w["word"], font=f, fill=LIT_COLOR, anchor="lm")
+        pad = 8
+        cur = Image.new("RGBA", (tw + 2 * pad, th), (0, 0, 0, 0))
+        cd, hh = ImageDraw.Draw(cur), int(f.size * 0.58)
+        cd.rounded_rectangle((2, th // 2 - hh, tw + 2 * pad - 3, th // 2 + hh), radius=16, fill=YELLOW + (255,))
+        cd.text((pad + 4, th // 2), w["word"], font=f, fill=DARK + (255,), anchor="lm")
+        px, py = int(w["x"]) - 4, int(w["y"] - th / 2)
+        out.append({"lit": lit, "cur": cur, "px": px, "py": py, "cx": px - pad, "cy": py, "t0": t0, "t1": t1})
+    return out
 
 
 def render_video(specs, out_path, vstate=None, seed=0):
@@ -861,16 +1130,27 @@ def render_video(specs, out_path, vstate=None, seed=0):
             else:
                 dur = max(MIN_SLIDE_SEC, 1.0 + len(sp.get("caption", "")) / 14, sp.get("min", 0))
             slides.append({"layer": sp["layer"], "caption": sp.get("caption", ""), "voice_wav": wav, "dur": dur,
-                           "priority": sp.get("priority", 5)})
+                           "voice_dur": audio_duration(wav) if wav else 0.0, "priority": sp.get("priority", 5),
+                           "group": sp.get("group") or f"s{i}", "words": sp.get("words"), "lead": sp.get("lead", ""),
+                           "accent": sp.get("accent"), "sfx": sp.get("sfx", "whoosh")})
         while sum(s["dur"] for s in slides) > MAX_VIDEO_SEC and len(slides) > 2:
-            drop = min((s for s in slides[1:-1]), key=lambda s: (s["priority"], -s["dur"]), default=None)
-            if drop is None:
+            groups = {}
+            for sl in slides[1:-1]:
+                groups.setdefault(sl["group"], []).append(sl)
+            if not groups:
                 break
-            slides.remove(drop)  # выкидываем самый неважный слайд
+            gid = min(groups, key=lambda g: (max(x["priority"] for x in groups[g]), -sum(x["dur"] for x in groups[g])))
+            for sl in groups[gid]:  # выкидываем самый неважный блок целиком: половина мысли хуже, чем её отсутствие
+                slides.remove(sl)
+            print("не влезаем в лимит длины, убран блок:", gid)
         if sum(s["dur"] for s in slides) > MAX_VIDEO_SEC:
             print(f"ролик длиннее {MAX_VIDEO_SEC} с даже после сокращения, оставляю как есть")
-        for sl in slides:
+        for idx, sl in enumerate(slides):
             n = max(1, round(sl["dur"] * FPS))
+            sl["anim"] = idx
+            if sl.get("words"):
+                span = sl["voice_dur"] if sl.get("voice_wav") else max(0.5, sl["dur"] - 0.3)
+                sl["karaoke"] = build_karaoke(sl["words"], word_times(sl["words"], sl.get("lead", ""), span))
             sl["content"] = _crop_layer(sl["layer"])
             sl["bubble"] = make_bubble(sl["caption"]) if sl["caption"] else None
             sl["mouth"] = [mouth_state(v) for v in (envelope(sl["voice_wav"], FPS, n) if sl["voice_wav"] else [0.0] * n)]
@@ -918,9 +1198,18 @@ def _short(text, n=130):
     return cut + "."
 
 
+CTA_SPEECHES = [CTA_SPEECH,
+                "Свежая мета и гайды каждый день в телеграм-канале. Сканируй код и подписывайся!",
+                "Не пропускай новости Бравл Старс! Сканируй код и жми подписаться!"]
+HOOKS = [("Кто сильнее всех?", "мета Brawl Stars сегодня", "Мета Бравл Старс сегодня! Кто сильнее всех?"),
+         ("Кто ломает мету?", "топ бойцов за сутки", "Вот кто сейчас ломает мету в Бравл Старс!"),
+         ("Топ бойцов дня", "что берут лучшие игроки", "Топ бойцов за сутки! Угадаешь, кто первый?")]
+
+
 def cta_spec():
-    return {"layer": L_cta(CTA_HANDLE, QR_URL), "speech": CTA_SPEECH, "caption": "Сканируй QR и подписывайся!",
-            "priority": 10, "min": CTA_MIN_SEC}
+    speech = random.Random(today() + "cta").choice(CTA_SPEECHES)  # фразы чередуются по дням: ролики не слипаются в один
+    return {"layer": L_cta(CTA_HANDLE, QR_URL), "speech": speech, "caption": "Сканируй QR и подписывайся!",
+            "priority": 10, "min": CTA_MIN_SEC, "sfx": "ding", "accent": YELLOW}
 
 
 def script_meta(meta):
@@ -932,44 +1221,42 @@ def script_meta(meta):
     total = meta["battles"] * 6
     pop = max(rows, key=lambda r: r[1])
     por = _portraits([r[0] for r in top3] + [pop[0]])
-    specs = [{"layer": L_title("Кто сильнее всех?", "мета Brawl Stars сегодня"),
-              "speech": "Мета Бравл Старс сегодня! Кто сильнее всех?", "caption": "Мета Brawl Stars сегодня", "priority": 9}]
-    for rank in (3, 2, 1):
+    title, sub, say = random.Random(today() + "hook").choice(HOOKS)
+    specs = [{"layer": L_title(title, sub), "speech": say, "caption": "Мета Brawl Stars сегодня", "priority": 9,
+              "accent": PURPLE}]
+    for rank, accent in ((3, BLUE), (2, PINK), (1, ORANGE)):
         n, pk, w, wr, lb = top3[rank - 1]
+        say = (f"И первое место: {n}!" if rank == 1 else f"{ORD[rank]} место: {n}.") + f" {bot.pct(wr)} побед."
         specs.append({"layer": L_hero(n, f"{bot.pct(wr)} побед", f"пикрейт {bot.pct(pk / total)}", por.get(n.upper()), rank),
-                      "speech": f"{ORD[rank]} место: {n}. {bot.pct(wr)} побед.",
-                      "caption": f"{rank} место: {n}, {bot.pct(wr)} побед", "priority": 8 if rank == 1 else 6})
+                      "speech": say, "caption": f"{rank} место: {n}, {bot.pct(wr)} побед",
+                      "priority": 8 if rank == 1 else 6, "accent": accent, "sfx": "ding" if rank == 1 else "whoosh"})
     if pop[0] not in [r[0] for r in top3]:
         specs.append({"layer": L_hero(pop[0], "самый популярный", f"{bot.pct(pop[3])} побед", por.get(pop[0].upper())),
                       "speech": f"Самый популярный: {pop[0]}. Его берут в {bot.pct(pop[1] / total)} боёв.",
-                      "caption": f"Самый популярный: {pop[0]}", "priority": 3})
+                      "caption": f"Самый популярный: {pop[0]}", "priority": 3, "accent": GREEN})
     specs.append(cta_spec())
     names = ", ".join(r[0] for r in top3)
     return {"kind": "meta", "specs": specs, "caption": f"🔥 Мета Brawl Stars сегодня: {names}. Кого берёте вы?"}
 
 
 def script_guide(b, state):
-    """Ролик «Гайд на бойца» по тем же данным, что и гайд в канале."""
+    """Ролик «Гайд на бойца» по тем же данным, что и гайд в канале. Тексты не режутся: длинное делится на экраны."""
     info = bot.guide_info(b, state)
     por = _portraits([info["name"]]).get(info["name"].upper())
     specs = [{"layer": L_hero(info["name"], info["cls_ru"] or "гайд", info["short_stat"], por),
               "speech": f"Гайд на бойца {info['name']}!" + (f" Это {info['cls_ru']}." if info["cls_ru"] else ""),
-              "caption": f"Гайд: {info['name']}", "priority": 10}]
+              "caption": f"Гайд: {info['name']}", "priority": 10, "accent": PURPLE}]
     if info["desc"]:
-        d = _short(info["desc"], 120)
-        specs.append({"layer": L_text("Кто это", d, BLUE), "speech": d, "caption": "", "priority": 4})
-    for label, rows, accent, take in (("Гаджет", info["gadgets"], ORANGE, 1), ("Звёздная сила", info["stars"], PINK, 1)):
-        for n, d in [r for r in rows if r[1]][:take]:
-            d = _short(d, 120)
-            specs.append({"layer": L_text(label, f"{n}: {d}", accent), "speech": f"{label}. {d}", "caption": "", "priority": 7})
+        specs += text_specs("Кто это", info["desc"], BLUE, 4)
+    for label, rows, accent, prio in (("Гаджет", info["gadgets"], ORANGE, 7), ("Звёздная сила", info["stars"], PINK, 7),
+                                      ("Гиперзаряд", info.get("hypers") or [], PURPLE, 5)):
+        for n, d in [r for r in rows if r[1]][:1]:
+            specs += text_specs(label, f"{n}: {d}", accent, prio, say_first=label + ".")
     if info["short_stat"]:
-        specs.append({"layer": L_text("Данные топ-игроков", f"Процент побед: {info['short_stat'].replace(' побед', '')}", GREEN),
-                      "speech": f"У лучших игроков мира {info['short_stat']}.", "caption": "", "priority": 6})
+        specs += text_specs("Данные топ-игроков", f"У лучших игроков мира {info['short_stat']}.", GREEN, 6)
     if info["tip"]:
-        t = _short(info["tip"], 130)
-        specs.append({"layer": L_text("Как играть", t, BLUE), "speech": t, "caption": "", "priority": 8})
-    disc = "Это универсальный разбор. Выбирай под карту и режим."
-    specs.append({"layer": L_text("Важно", disc, RED), "speech": disc, "caption": "", "priority": 9})
+        specs += text_specs("Как играть", info["tip"], BLUE, 8)
+    specs += text_specs("Важно", "Это универсальный разбор. Выбирай под карту и режим.", RED, 9)
     specs.append(cta_spec())
     if len(specs) < 4:
         return None
@@ -977,13 +1264,18 @@ def script_guide(b, state):
             "caption": f"📘 Гайд на {info['name']} в Brawl Stars: что умеет и как играть. Играете за него?"}
 
 
+DEMO_LONG = ("Длинный текст теперь не обрезается и не теряет смысл. Если он не помещается на один экран, "
+             "ролик сам делит его на несколько частей, а голос читает ровно то, что написано. "
+             "Слова подсвечиваются в такт озвучке, чтобы глаз не отставал от звука.")
+
+
 def script_demo():
-    return {"kind": "demo", "caption": "Тестовый ролик", "specs": [
-        {"layer": L_title("Тест ролика", "проверка сборки"), "speech": "Привет! Это тест автоматической сборки роликов.",
-         "caption": "Тест автоматической сборки", "priority": 9},
-        {"layer": L_text("Всё работает", "Голос, ведущий, QR-код и переходы собраны автоматически."),
-         "speech": "Голос, ведущий, кью ар код и переходы собраны автоматически.", "caption": "", "priority": 5},
-        cta_spec()]}
+    specs = [{"layer": L_title("Тест ролика", "проверка сборки"), "speech": "Привет! Это тест автоматической сборки роликов.",
+              "caption": "Тест автоматической сборки", "priority": 9, "accent": PURPLE}]
+    specs += text_specs("Всё работает", "Голос, ведущий, QR-код и переходы собраны автоматически.", ORANGE, 5)
+    specs += text_specs("Длинный текст", DEMO_LONG, BLUE, 5)
+    specs.append(cta_spec())
+    return {"kind": "demo", "caption": "Тестовый ролик", "specs": specs}
 
 
 # ===================== СОСТОЯНИЕ, ДОСТАВКА, ПУБЛИКАЦИЯ =====================
@@ -1071,6 +1363,49 @@ def tiktok_upload(path):
     return resp["data"].get("publish_id", "")
 
 
+def tg_send_audio(path, caption, chat_id=None):
+    chat_id = chat_id or VIDEO_CHAT_ID
+    if not chat_id or not bot.TOKEN:
+        return False
+    b = uuid.uuid4().hex
+    body = io.BytesIO()
+    for name, val in (("chat_id", chat_id), ("caption", caption[:900])):
+        body.write(f'--{b}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{val}\r\n'.encode())
+    body.write((f'--{b}\r\nContent-Disposition: form-data; name="audio"; filename="voice.mp3"\r\n'
+                'Content-Type: audio/mpeg\r\n\r\n').encode())
+    with open(path, "rb") as f:
+        body.write(f.read())
+    body.write(f"\r\n--{b}--\r\n".encode())
+    req = urllib.request.Request(f"https://api.telegram.org/bot{bot.TOKEN}/sendAudio", data=body.getvalue(),
+                                 headers={"Content-Type": f"multipart/form-data; boundary={b}"})
+    urllib.request.urlopen(req, timeout=120).read()
+    return True
+
+
+def voice_test():
+    """python make_video.py voicetest: шлёт в личку одну фразу тремя вариантами, чтобы на слух выбрать лучший.
+    Как озвучка читает ударения, проверить без прослушивания нельзя, поэтому выбор за тобой."""
+    sample = ("Мета Бравл Старс сегодня! Мортис, Эдгар и Кроу. Гаджет и звёздная сила дают 53,4% побед. "
+              "Пикрейт Леона: 12%. Сканируй код и подписывайся!")
+    os.makedirs(OUT_DIR, exist_ok=True)
+    for tag, stress, rate in (("A: обычная", "", TTS_RATE), ("B: со знаками ударения", "acute", TTS_RATE),
+                              ("C: помедленнее", "", "+0%")):
+        globals()["TTS_STRESS"], old_rate = stress, globals()["TTS_RATE"]
+        globals()["TTS_RATE"] = rate
+        try:
+            text = spoken(sample)
+            out = tts(text, os.path.join(OUT_DIR, f"voice_{tag[0]}.mp3"))
+        finally:
+            globals()["TTS_RATE"] = old_rate
+        print(tag, "->", text)
+        if out:
+            try:
+                tg_send_audio(out, f"Вариант {tag}")
+            except Exception as ex:
+                print("не отправилось:", ex)
+    globals()["TTS_STRESS"] = ""
+
+
 def deliver(result, caption):
     """Отправляет ролик туда, куда настроено. Любая ошибка доставки не ломает запуск."""
     text = full_caption(caption)
@@ -1131,6 +1466,8 @@ def make_one(kind, state):
 def main(argv=None):
     argv = argv or sys.argv[1:]
     mode = argv[0] if argv else "auto"
+    if mode == "voicetest":
+        return voice_test()
     bot.ensure_pillow()
     if setup_fonts():
         print("шрифт Russo One подключён")
