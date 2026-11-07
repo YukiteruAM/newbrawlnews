@@ -7,7 +7,7 @@ on:
       kind:
         description: "Что собрать"
         type: choice
-        options: [auto, meta, guide, demo]
+        options: [auto, meta, guide, demo, voicetest]
         default: auto
 permissions:
   contents: write
@@ -38,6 +38,9 @@ jobs:
           TIKTOK_CLIENT_SECRET: ${{ secrets.TIKTOK_CLIENT_SECRET }}
           TIKTOK_REFRESH_TOKEN: ${{ secrets.TIKTOK_REFRESH_TOKEN }}
           TTS_VOICE: ${{ vars.TTS_VOICE }}
+          TTS_RATE: ${{ vars.TTS_RATE }}
+          TTS_PITCH: ${{ vars.TTS_PITCH }}
+          TTS_STRESS: ${{ vars.TTS_STRESS }}
           VIDEO_CTA_HANDLE: ${{ vars.VIDEO_CTA_HANDLE }}
         run: python -u make_video.py ${{ inputs.kind || 'auto' }}
       - name: Keep videos for 3 days
