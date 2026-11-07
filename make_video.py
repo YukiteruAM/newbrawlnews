@@ -677,7 +677,7 @@ def make_mascot():
     return {(m, b): draw(m, b) for m in range(4) for b in (0, 1)}
 
 
-def make_bubble(text, max_w=640):
+def make_bubble(text, max_w=560):
     """Облачко с репликой справа от ведущего (хвостик слева)."""
     Image, ImageDraw = bot.Image, bot.ImageDraw
     probe = ImageDraw.Draw(Image.new("RGBA", (10, 10)))
@@ -909,6 +909,7 @@ def _crop_layer(layer):
     return layer.crop(box), (box[0], box[1])
 
 
+CONTENT_DY, MASCOT_Y, BUBBLE_Y = -70, 985, 1000   # всё выше: низ экрана (~400 px) закрывает интерфейс TikTok
 ENTRY = [(0, 70), (-520, 0), (520, 0), (0, -130)]   # откуда «влетает» слайд: снизу, слева, справа, сверху
 
 
@@ -923,6 +924,7 @@ def render_frames(slides, bg, particles, sprites, total):
     for si, sl in enumerate(slides):
         n = max(1, round(sl["dur"] * FPS))
         content, (cx, cy) = sl["content"]
+        cy += CONTENT_DY
         bubble = sl.get("bubble")
         kar = sl.get("karaoke")
         tint = Image.new("RGB", (W, H), sl.get("accent") or PURPLE)
@@ -972,16 +974,16 @@ def render_frames(slides, bg, particles, sprites, total):
             if k < POP_FRAMES:
                 s2 = 0.85 + 0.15 * _ease_out_back(k / POP_FRAMES)
                 sp2 = spr.resize((int(spr.width * s2), int(spr.height * s2)), Image.BILINEAR)
-                frame.paste(sp2, (30 + (spr.width - sp2.width) // 2, 1085 + (spr.height - sp2.height) + bob), sp2)
+                frame.paste(sp2, (30 + (spr.width - sp2.width) // 2, MASCOT_Y + (spr.height - sp2.height) + bob), sp2)
             else:
-                frame.paste(spr, (30, 1085 + bob), spr)
+                frame.paste(spr, (30, MASCOT_Y + bob), spr)
             if bubble is not None:
                 if k < POP_FRAMES:
                     s3 = 0.7 + 0.3 * _ease_out_back(k / POP_FRAMES)
                     bb = bubble.resize((max(1, int(bubble.width * s3)), max(1, int(bubble.height * s3))), Image.BILINEAR)
                 else:
                     bb = bubble
-                frame.paste(bb, (360, 1100 + (bubble.height - bb.height) // 2), bb)
+                frame.paste(bb, (360, BUBBLE_Y + (bubble.height - bb.height) // 2), bb)
             if si > 0 and k < 3:  # вспышка на склейке
                 frame = Image.blend(frame, white, 0.30 - 0.10 * k)
             frame.paste(top, (0, 0), top)
@@ -1101,7 +1103,7 @@ def build_karaoke(words, times):
         cd, hh = ImageDraw.Draw(cur), int(f.size * 0.58)
         cd.rounded_rectangle((2, th // 2 - hh, tw + 2 * pad - 3, th // 2 + hh), radius=16, fill=YELLOW + (255,))
         cd.text((pad + 4, th // 2), w["word"], font=f, fill=DARK + (255,), anchor="lm")
-        px, py = int(w["x"]) - 4, int(w["y"] - th / 2)
+        px, py = int(w["x"]) - 4, int(w["y"] - th / 2) + CONTENT_DY
         out.append({"lit": lit, "cur": cur, "px": px, "py": py, "cx": px - pad, "cy": py, "t0": t0, "t1": t1})
     return out
 
