@@ -17,14 +17,14 @@ import urllib.request, urllib.parse, urllib.error
 import bot
 
 # ===================== НАСТРОЙКИ И ЛИМИТЫ =====================
-W, H, FPS = 1080, 1920, 24       # 24 кадра в секунду: плавно и быстро собирается
+W, H, FPS = 1080, 1920, int(os.environ.get("VIDEO_FPS") or 30)   # 30 к/с: родная частота TikTok, движение заметно плавнее
 VIDEO_STATE = "videos.json"
 VIDEO_DAILY_LIMIT = 2            # не больше двух роликов в сутки: так канал не выглядит спамом
 MAX_VIDEO_SEC = 58               # до минуты: длиннее ролики досматривают реже
 MIN_SLIDE_SEC = 1.6              # быстрый монтаж: кадры сменяются каждые 2-3 секунды
 CTA_MIN_SEC = 5.0                # финальный кадр с QR держим дольше, чтобы успели навести камеру
 PAD_SEC = 0.12                   # пауза после фразы
-POP_FRAMES = 9                   # длина анимации появления кадра
+POP_FRAMES = max(5, round(0.375 * FPS))   # длина анимации появления кадра (~0,4 с)
 OUT_DIR = "out"
 MUSIC_DIR = "music"              # сюда клади СВОИ треки или музыку без авторских прав
 MUSIC_VOLUME, SFX_VOLUME = 0.12, 0.30
@@ -728,7 +728,10 @@ def make_bg(seed=0, pal=0):
     for i in range(-4, 9):
         x = i * 300
         st.polygon([(x, 0), (x + 120, 0), (x - 500 + 120, bh), (x - 500, bh)], fill=(255, 255, 255, 26))
-    return Image.alpha_composite(img, stripes).convert("RGB")
+    from PIL import ImageChops
+    out = Image.alpha_composite(img, stripes).convert("RGB")
+    noise = Image.effect_noise((bw, bh), 2.5).convert("RGB")  # шум в ±2 уровня: убирает ступеньки (banding)
+    return ImageChops.add(out, noise, 1.0, -128)
 
 
 def _shade(c, k):
@@ -1389,7 +1392,7 @@ def get_burst(color):
 def _scaled(img, sc):
     if abs(sc - 1) < 0.01:
         return img
-    return img.resize((max(1, int(img.width * sc)), max(1, int(img.height * sc))), bot.Image.BILINEAR)
+    return img.resize((max(1, int(img.width * sc)), max(1, int(img.height * sc))), bot.Image.BICUBIC)
 
 
 def render_frames(slides, bgs, particles, sprites, total):
@@ -1421,11 +1424,12 @@ def render_frames(slides, bgs, particles, sprites, total):
         ent = ENTRY[sl.get("anim", 0) % len(ENTRY)]
         for k in range(n):
             gt = (done + k) / FPS
+            kk = k * 24.0 / FPS  # длительность склеек задана в кадрах при 24 к/с
             ox = int(110 + 100 * math.sin(gt * 0.9))
             oy = int(160 + 130 * math.cos(gt * 0.7))
-            if k < 6 and si > 0:  # короткая «тряска камеры» при смене слайда
-                ox += int(18 * math.sin(k * 3.3) * (1 - k / 6))
-                oy += int(14 * math.cos(k * 2.7) * (1 - k / 6))
+            if kk < 6 and si > 0:  # короткая «тряска камеры» при смене слайда
+                ox += int(18 * math.sin(kk * 3.3) * (1 - kk / 6))
+                oy += int(14 * math.cos(kk * 2.7) * (1 - kk / 6))
             frame = bg.crop((ox, oy, ox + W, oy + H))
             pe = _ease_out_back(min(1.0, k / POP_FRAMES))
             for p in particles:
@@ -1469,10 +1473,10 @@ def render_frames(slides, bgs, particles, sprites, total):
             # ведущий
             mouth = sl["mouth"][k] if k < len(sl["mouth"]) else 0
             if bubble is None:  # без пузыря диктор крупнее: на текстовых слайдах он главный собеседник
-                hs = sprites.render(gt, mouth, k, si, 1.3)
+                hs = sprites.render(gt, mouth, kk, si, 1.3)
                 frame.paste(hs, (0, 1495 - hs.height), hs)
             else:
-                hs = sprites.render(gt, mouth, k, si)
+                hs = sprites.render(gt, mouth, kk, si)
                 frame.paste(hs, (HOST_X, MASCOT_Y), hs)
             if bubble is not None:
                 bb = _scaled(bubble, 0.7 + 0.3 * pe) if k < POP_FRAMES else bubble
@@ -1483,21 +1487,21 @@ def render_frames(slides, bgs, particles, sprites, total):
                     z = 1 + 0.045 * (1 - q / 0.18)
                     w2, h2 = int(W / z), int(H / z)
                     frame = frame.crop(((W - w2) // 2, (H - h2) // 2, (W - w2) // 2 + w2, (H - h2) // 2 + h2)).resize((W, H), Image.BILINEAR)
-            if si > 0 and k < 6:  # наезд камеры при смене слайда
-                z = 1 + 0.07 * (1 - k / 6)
+            if si > 0 and kk < 6:  # наезд камеры при смене слайда
+                z = 1 + 0.07 * (1 - kk / 6)
                 w2, h2 = int(W / z), int(H / z)
                 frame = frame.crop(((W - w2) // 2, (H - h2) // 2, (W - w2) // 2 + w2, (H - h2) // 2 + h2)).resize((W, H), Image.BILINEAR)
-            if si > 0 and k < 4:  # RGB-сдвиг, как глитч
-                amt = 20 - 5 * k
+            if si > 0 and kk < 4:  # RGB-сдвиг, как глитч
+                amt = int(20 - 5 * kk)
                 r, g, b_ = frame.split()
                 frame = Image.merge("RGB", (ImageChops.offset(r, amt, 0), g, ImageChops.offset(b_, -amt, 0)))
-            if si > 0 and k < 8:  # диагональная полоса-шторка пролетает через кадр
-                x0 = int(-520 + (k / 7) * (W + 1100))
+            if si > 0 and kk < 8:  # диагональная полоса-шторка пролетает через кадр
+                x0 = int(-520 + (kk / 7) * (W + 1100))
                 dr = ImageDraw.Draw(frame)
                 dr.polygon([(x0, 0), (x0 + 420, 0), (x0 + 160, H), (x0 - 260, H)], fill=bcolor)
                 dr.polygon([(x0 + 420, 0), (x0 + 470, 0), (x0 + 210, H), (x0 + 160, H)], fill=DARK)
-            if si > 0 and k < 2:  # вспышка на склейке
-                frame = Image.blend(frame, white, 0.35 - 0.15 * k)
+            if si > 0 and kk < 2:  # вспышка на склейке
+                frame = Image.blend(frame, white, 0.35 - 0.15 * kk)
             frame.paste(logo, (0, 0), logo)
             dr = ImageDraw.Draw(frame)
             dr.ellipse((58, 62, 80, 84), fill=(255, 60, 70) if int(gt * 2) % 2 == 0 else (120, 30, 50))  # «эфир»
@@ -1513,10 +1517,26 @@ def render_frames(slides, bgs, particles, sprites, total):
         done += n
 
 
-def encode_video(frames, out_path):
+VIDEO_CRF = os.environ.get("VIDEO_CRF") or "16"          # меньше = чище (14-18); 16 заметно лучше прежних 20
+VIDEO_PRESET = os.environ.get("VIDEO_PRESET") or "fast"
+TG_LIMIT = 49_000_000                                     # лимит Bot API 50 МБ с запасом
+
+
+def video_maxrate(duration):
+    """Потолок битрейта: чем короче ролик, тем выше качество, но файл всегда влезает в лимит Telegram."""
+    if not duration:
+        return 12_000_000
+    return int(max(2_500_000, min(16_000_000, 46e6 * 8 / duration - 250_000)))
+
+
+def encode_video(frames, out_path, duration=None):
+    mr = video_maxrate(duration)
+    vf = "scale=out_color_matrix=bt709:out_range=tv:flags=lanczos+accurate_rnd+full_chroma_int,format=yuv420p"
     cmd = ["ffmpeg", "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{W}x{H}", "-r", str(FPS),
-           "-i", "-", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
-           "-movflags", "+faststart", out_path]
+           "-i", "-", "-vf", vf, "-c:v", "libx264", "-preset", VIDEO_PRESET, "-tune", "animation", "-crf", VIDEO_CRF,
+           "-maxrate", str(mr), "-bufsize", str(2 * mr), "-profile:v", "high", "-level", "4.2", "-x264-params", "aq-mode=3",
+           "-pix_fmt", "yuv420p", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709",
+           "-color_range", "tv", "-movflags", "+faststart", out_path]
     p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
         for fr in frames:
@@ -1530,6 +1550,20 @@ def encode_video(frames, out_path):
         p.wait()
     if p.returncode != 0:
         raise RuntimeError("ffmpeg не смог собрать видео: " + err[-300:])
+
+
+def ensure_size(path, duration, limit=TG_LIMIT):
+    """Запасной вариант: если готовый файл всё же больше лимита Telegram, пережимаем его под нужный битрейт."""
+    if os.path.getsize(path) <= limit:
+        return False
+    target = int(limit * 8 / max(1.0, duration) - 200_000)
+    tmp = path + ".small.mp4"
+    run(["ffmpeg", "-y", "-loglevel", "error", "-i", path, "-c:v", "libx264", "-preset", VIDEO_PRESET, "-b:v", str(target),
+         "-maxrate", str(int(target * 1.1)), "-bufsize", str(2 * target), "-pix_fmt", "yuv420p", "-colorspace", "bt709",
+         "-color_primaries", "bt709", "-color_trc", "bt709", "-c:a", "copy", "-movflags", "+faststart", tmp])
+    os.replace(tmp, path)
+    print("файл был больше лимита Telegram, пережат до", os.path.getsize(path) // 1000000, "МБ")
+    return True
 
 
 def _concat_wavs(parts, workdir, name):
@@ -1833,10 +1867,11 @@ def render_video(specs, out_path, vstate=None, seed=0, host=None):
                 sprites = make_host(*host)
             except Exception as ex:
                 print("диктор-персонаж не получился, беру робота:", ex)
-        encode_video(render_frames(slides, [make_bg(seed, i) for i in range(3)], make_particles(seed), sprites or make_robot_host(), total_frames), silent)
+        encode_video(render_frames(slides, [make_bg(seed, i) for i in range(3)], make_particles(seed), sprites or make_robot_host(), total_frames), silent, total_frames / FPS)
         voice_track, sfx_track = build_audio_tracks(slides, workdir)
         music = pick_music(vstate)
         mux(silent, voice_track, sfx_track, music, total_sec, out_path)
+        ensure_size(out_path, total_sec)
         return {"path": out_path, "duration": total_sec, "slides": len(slides), "voiced": voiced > 0,
                 "music": os.path.basename(music) if music else ""}
     finally:
@@ -2005,6 +2040,26 @@ def tg_send_video(path, caption, duration=0, chat_id=None):
     return True
 
 
+def tg_send_document(path, caption, chat_id=None):
+    """Отправляет тот же файл как документ: Telegram не пережимает документы, это оригинал без потери качества."""
+    chat_id = chat_id or VIDEO_CHAT_ID
+    if not chat_id or not bot.TOKEN:
+        return False
+    b = uuid.uuid4().hex
+    body = io.BytesIO()
+    for name, val in (("chat_id", chat_id), ("caption", caption[:1000]), ("disable_content_type_detection", "true")):
+        body.write(f'--{b}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{val}\r\n'.encode())
+    body.write((f'--{b}\r\nContent-Disposition: form-data; name="document"; filename="{os.path.basename(path)}"\r\n'
+                'Content-Type: video/mp4\r\n\r\n').encode())
+    with open(path, "rb") as f:
+        body.write(f.read())
+    body.write(f"\r\n--{b}--\r\n".encode())
+    req = urllib.request.Request(f"https://api.telegram.org/bot{bot.TOKEN}/sendDocument", data=body.getvalue(),
+                                 headers={"Content-Type": f"multipart/form-data; boundary={b}"})
+    urllib.request.urlopen(req, timeout=300).read()
+    return True
+
+
 def tiktok_upload(path):
     """Необязательно. Загружает ролик в ЧЕРНОВИКИ TikTok через официальный API (Content Posting API, режим upload).
     Нужны: приложение на developers.tiktok.com со scope video.upload и токены в секретах
@@ -2104,6 +2159,12 @@ def deliver(result, caption):
             print("ролик отправлен в Telegram")
     except Exception as ex:
         print("ролик не отправился в Telegram (написал ли ты боту /start?):", ex)
+    if sent and os.environ.get("SEND_ORIGINAL", "1") != "0":
+        try:  # оригинал файлом: в приложении Telegram видео из sendVideo может показываться пережатым
+            tg_send_document(result["path"], "Оригинал без сжатия: сохраняй этот файл и загружай в TikTok")
+            print("оригинал отправлен документом")
+        except Exception as ex:
+            print("оригинал документом не отправился:", ex)
     try:
         pid = tiktok_upload(result["path"])
         if pid is not None:
