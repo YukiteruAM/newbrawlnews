@@ -42,6 +42,10 @@ jobs:
           TTS_PITCH: ${{ vars.TTS_PITCH }}
           TTS_STRESS: ${{ vars.TTS_STRESS }}
           TTS_STYLE: ${{ vars.TTS_STYLE }}
+          VIDEO_FPS: ${{ vars.VIDEO_FPS }}
+          VIDEO_CRF: ${{ vars.VIDEO_CRF }}
+          VIDEO_PRESET: ${{ vars.VIDEO_PRESET }}
+          SEND_ORIGINAL: ${{ vars.SEND_ORIGINAL }}
           VIDEO_CTA_HANDLE: ${{ vars.VIDEO_CTA_HANDLE }}
         run: python -u make_video.py ${{ inputs.kind || 'auto' }}
       - name: Keep videos for 3 days
