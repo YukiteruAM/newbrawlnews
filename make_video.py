@@ -566,98 +566,216 @@ def grad_text(layer, xy, text, font, top=(255, 244, 150), bottom=ORANGE, stroke=
     layer.paste(region, (box[0], box[1]))
 
 
-def make_bg(seed=0):
-    """Большой фон ролика (двигается за кадром): градиент, цветные пятна и световые полосы."""
+_BG_PAL = [((18, 62, 255), (112, 22, 214), [BLUE, PURPLE, (0, 205, 235), PINK]),
+           ((255, 48, 136), (92, 16, 192), [PINK, ORANGE, PURPLE, YELLOW]),
+           ((0, 178, 196), (30, 52, 205), [GREEN, BLUE, (0, 225, 205), PURPLE])]
+BURST_COLORS = [YELLOW, (0, 225, 235), (255, 120, 200)]   # по кругу: цвет вспышки контрастирует с палитрой фона слайда
+
+
+def make_bg(seed=0, pal=0):
+    """Яркий фон (три палитры, слайды чередуют их): градиент, цветные пятна, растр из точек и диагональные полосы."""
     Image, ImageDraw, ImageFilter = bot.Image, bot.ImageDraw, bot.ImageFilter
-    rnd = random.Random(seed)
+    top, low, colors = _BG_PAL[pal % len(_BG_PAL)]
+    rnd = random.Random(seed * 7 + pal)
     bw, bh = W + 220, H + 320
-    img = _vgrad(bw, bh, (48, 18, 120), (8, 5, 36)).convert("RGBA")
+    img = _vgrad(bw, bh, top, low).convert("RGBA")
     small = Image.new("RGBA", (bw // 4, bh // 4), (0, 0, 0, 0))  # пятна рисуем мелко и растягиваем: так быстро и мягко
     sd = ImageDraw.Draw(small)
-    for color in (PURPLE, BLUE, PINK, (0, 200, 170), ORANGE, PURPLE):
+    for color in colors + colors[:2]:
         r = rnd.randint(110, 200)
         x, y = rnd.randint(-40, bw // 4 - r), rnd.randint(-40, bh // 4 - r)
-        sd.ellipse((x, y, x + r, y + r), fill=color + (rnd.randint(110, 150),))
-    blobs = small.filter(ImageFilter.GaussianBlur(34)).resize((bw, bh), Image.BICUBIC)
-    img = Image.alpha_composite(img, blobs)
+        sd.ellipse((x, y, x + r, y + r), fill=color + (rnd.randint(120, 170),))
+    img = Image.alpha_composite(img, small.filter(ImageFilter.GaussianBlur(30)).resize((bw, bh), Image.BICUBIC))
+    dots = Image.new("RGBA", (bw, bh), (0, 0, 0, 0))  # растр как в комиксах: точки крупнее к низу
+    dd = ImageDraw.Draw(dots)
+    step = 44
+    for row, gy in enumerate(range(0, bh, step)):
+        r = 1.5 + 11 * (gy / bh) ** 1.6
+        for gx in range(-(step // 2) if row % 2 else 0, bw, step):
+            dd.ellipse((gx - r, gy - r, gx + r, gy + r), fill=(255, 255, 255, 36))
+    img = Image.alpha_composite(img, dots)
     stripes = Image.new("RGBA", (bw, bh), (0, 0, 0, 0))
     st = ImageDraw.Draw(stripes)
     for i in range(-4, 9):
-        x = i * 260
-        st.polygon([(x, 0), (x + 90, 0), (x - 500 + 90, bh), (x - 500, bh)], fill=(255, 255, 255, 14))
+        x = i * 300
+        st.polygon([(x, 0), (x + 120, 0), (x - 500 + 120, bh), (x - 500, bh)], fill=(255, 255, 255, 26))
     return Image.alpha_composite(img, stripes).convert("RGB")
-
-
-def make_particles(seed=0, count=16):
-    """Мелкие светящиеся шарики и звёздочки, медленно плывущие вверх."""
-    Image, ImageDraw, ImageFilter = bot.Image, bot.ImageDraw, bot.ImageFilter
-    rnd = random.Random(seed + 99)
-    parts = []
-    for i in range(count):
-        size = rnd.choice((28, 38, 54, 72))
-        sp = Image.new("RGBA", (size * 2, size * 2), (0, 0, 0, 0))
-        sd = ImageDraw.Draw(sp)
-        if i % 3 == 0:  # четырёхлучевая звёздочка
-            c = size
-            sd.polygon([(c, 4), (c + size * .18, c - size * .18), (size * 2 - 4, c), (c + size * .18, c + size * .18),
-                        (c, size * 2 - 4), (c - size * .18, c + size * .18), (4, c), (c - size * .18, c - size * .18)],
-                       fill=(255, 255, 255, 190))
-        else:
-            color = rnd.choice(((255, 255, 255), YELLOW, (150, 220, 255), PINK))
-            sd.ellipse((size * .4, size * .4, size * 1.6, size * 1.6), fill=color + (120,))
-            sp = sp.filter(ImageFilter.GaussianBlur(size * .12))
-        parts.append({"sp": sp, "x": rnd.randint(0, W), "y": rnd.randint(0, H + 200), "v": rnd.randint(40, 120),
-                      "sway": rnd.randint(14, 50), "ph": rnd.random() * 6.28})
-    rnd2 = random.Random(seed + 7)
-    for j in range(7):  # крупные «объёмные» предметы: разная скорость и размер дают глубину
-        size = rnd2.choice((70, 96, 130, 170))
-        color = rnd2.choice((PURPLE, BLUE, PINK, GREEN, ORANGE, (0, 200, 220)))
-        sp = make_gem(size, color) if j % 2 == 0 else make_orb(size, color)
-        if size >= 130:
-            sp = sp.filter(ImageFilter.GaussianBlur(3))  # ближние предметы чуть размыты, как вне фокуса
-        parts.append({"sp": sp, "x": rnd2.randint(0, W - size), "y": rnd2.randint(0, H + 200), "v": int(10 + size * 0.45),
-                      "sway": rnd2.randint(10, 36), "ph": rnd2.random() * 6.28})
-    return parts
 
 
 def _shade(c, k):
     return tuple(max(0, min(255, int(v * k))) for v in c)
 
 
-def make_gem(size, color):
-    """Огранённый кристалл с гранями разной яркости: выглядит объёмным."""
+# ---- мини-3D: многогранники рисуются многоугольниками с освещением (без библиотек)
+def _mesh_cube():
+    faces = []
+    for axis in range(3):
+        for sgn in (-1, 1):
+            pts = []
+            for a, b in ((-1, -1), (1, -1), (1, 1), (-1, 1)):
+                c = [0, 0, 0]
+                c[axis], c[(axis + 1) % 3], c[(axis + 2) % 3] = sgn, a, b
+                pts.append(tuple(c))
+            faces.append(pts)
+    return {"faces": faces, "inset": 0.62}  # «рамка» на гранях: как у силового куба
+
+
+def _mesh_gem():
+    n = 8
+    ring = lambda r, y: [(r * math.cos(2 * math.pi * i / n), y, r * math.sin(2 * math.pi * i / n)) for i in range(n)]
+    table, girdle, culet = ring(0.55, 0.95), ring(1.0, 0.3), (0, -1.25, 0)
+    faces = [table]
+    for i in range(n):
+        j = (i + 1) % n
+        faces.append([table[i], table[j], girdle[j], girdle[i]])
+        faces.append([girdle[i], girdle[j], culet])
+    return {"faces": faces, "inset": 0}
+
+
+def _mesh_star():
+    pts = [((1.25 if i % 2 == 0 else 0.55) * math.cos(math.pi / 2 + i * math.pi / 5),
+            (1.25 if i % 2 == 0 else 0.55) * math.sin(math.pi / 2 + i * math.pi / 5)) for i in range(10)]
+    zf, zb = 0.38, -0.38
+    faces = [[(x, y, zf) for x, y in pts], [(x, y, zb) for x, y in pts][::-1]]
+    for i in range(10):
+        j = (i + 1) % 10
+        faces.append([(pts[i][0], pts[i][1], zf), (pts[j][0], pts[j][1], zf), (pts[j][0], pts[j][1], zb), (pts[i][0], pts[i][1], zb)])
+    return {"faces": faces, "inset": 0}
+
+
+def _v_sub(a, b): return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
+def _v_dot(a, b): return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+def _v_cross(a, b): return (a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
+def _v_norm(a):
+    l = math.sqrt(_v_dot(a, a)) or 1.0
+    return (a[0] / l, a[1] / l, a[2] / l)
+
+
+def _rotate3(v, ax, ay):
+    x, y, z = v
+    c, sn = math.cos(ay), math.sin(ay)
+    x, z = x * c + z * sn, -x * sn + z * c
+    c, sn = math.cos(ax), math.sin(ax)
+    y, z = y * c - z * sn, y * sn + z * c
+    return (x, y, z)
+
+
+_LIGHT = _v_norm((-0.45, 0.6, 0.75))
+_HALF = _v_norm((_LIGHT[0], _LIGHT[1], _LIGHT[2] + 1))
+
+
+def render_mesh(mesh, color, size, ax, ay, radius=0.30, line=0.018):
+    """Один кадр вращающегося предмета: грани с освещением и бликом, чёрные контуры как в игре, мягкое свечение."""
     Image, ImageDraw, ImageFilter = bot.Image, bot.ImageDraw, bot.ImageFilter
-    S = 4
-    im = Image.new("RGBA", (100 * S, 100 * S), (0, 0, 0, 0))
-    d = ImageDraw.Draw(im)
-    pt = lambda *v: [(x * S, y * S) for x, y in zip(v[0::2], v[1::2])]
-    facets = [((28, 18, 50, 42, 6, 42), 1.0), ((28, 18, 72, 18, 50, 42), 1.35), ((72, 18, 94, 42, 50, 42), 0.85),
-              ((6, 42, 50, 42, 50, 92), 0.7), ((50, 42, 94, 42, 50, 92), 0.5)]
-    for pts, k in facets:
-        d.polygon(pt(*pts), fill=_shade(color, k) + (255,), outline=_shade(color, 0.35) + (255,))
-    d.line(pt(30, 22, 44, 22), fill=(255, 255, 255, 200), width=3 * S)
-    return im.resize((size, size), Image.LANCZOS)
+    ss = 2
+    S = size * ss
+    img = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+    glow = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+    ImageDraw.Draw(glow).ellipse((S * .12, S * .12, S * .88, S * .88), fill=color + (120,))
+    img.alpha_composite(glow.filter(ImageFilter.GaussianBlur(S * 0.07)))
+    d = ImageDraw.Draw(img)
+    sc, c = S * radius, S / 2
+    faces = []
+    for face in mesh["faces"]:
+        pts = [_rotate3(v, ax, ay) for v in face]
+        cen = tuple(sum(p[i] for p in pts) / len(pts) for i in range(3))
+        n = _v_norm(_v_cross(_v_sub(pts[1], pts[0]), _v_sub(pts[2], pts[0])))
+        if _v_dot(n, cen) < 0:
+            n = (-n[0], -n[1], -n[2])  # нормаль всегда наружу
+        if n[2] <= 0.03:
+            continue  # грань смотрит от зрителя
+        faces.append((cen[2], pts, cen, n))
+    faces.sort(key=lambda f: f[0])
+    lw = max(2, int(S * line))
+    for _, pts, cen, n in faces:
+        k = 0.42 + 0.75 * max(0.0, _v_dot(n, _LIGHT))
+        spec = max(0.0, _v_dot(n, _HALF)) ** 22
+        col = tuple(min(255, int(ch * k + 255 * spec * 0.7)) for ch in color)
+        poly = [(c + p[0] * sc, c - p[1] * sc) for p in pts]
+        d.polygon(poly, fill=col + (255,))
+        if mesh.get("inset"):
+            ic = (c + cen[0] * sc, c - cen[1] * sc)
+            inner = [(ic[0] + (x - ic[0]) * mesh["inset"], ic[1] + (y - ic[1]) * mesh["inset"]) for x, y in poly]
+            col2 = tuple(min(255, int(ch * (k * 1.15 + 0.12) + 60 * spec)) for ch in color)
+            d.polygon(inner, fill=col2 + (255,))
+            d.line(inner + [inner[0]], fill=_shade(color, 0.5) + (255,), width=max(1, lw // 2), joint="curve")
+        d.line(poly + [poly[0]], fill=DARK + (255,), width=lw, joint="curve")
+    return img.resize((size, size), Image.LANCZOS)
 
 
-def make_orb(size, color):
-    """Глянцевый шар: градиент от блика к тени."""
+_MESHES = {"cube": (_mesh_cube, 0.27, 0.022, 0.55), "gem": (_mesh_gem, 0.31, 0.012, 0.55), "star": (_mesh_star, 0.32, 0.02, 0.28)}
+OBJ_COLORS = {"cube": [(70, 225, 95), (255, 175, 35)], "gem": [PINK, (80, 175, 255), (175, 105, 255)],
+              "star": [YELLOW, (255, 150, 40)]}
+_OBJ_CACHE = {}
+
+
+def obj_frames(kind, color, size, n=30, alpha=1.0):
+    """Цикл вращения предмета (n кадров) для силового куба, кристалла и звезды. Считается один раз и кэшируется."""
+    key = (kind, color, size, n, alpha)
+    if key not in _OBJ_CACHE:
+        mk, radius, line, tiltx = _MESHES[kind]
+        mesh = mk()
+        frames = []
+        for i in range(n):
+            a = 2 * math.pi * i / n
+            turn = 0.95 * math.sin(a) if kind == "star" else a  # звезда качается, а не крутится: с ребра она выглядит как полоски
+            fr = render_mesh(mesh, color, size, tiltx + 0.15 * math.sin(a), turn, radius, line)
+            if alpha < 1.0:
+                fr.putalpha(fr.getchannel("A").point(lambda v, al=alpha: int(v * al)))
+            frames.append(fr)
+        _OBJ_CACHE[key] = frames
+    return _OBJ_CACHE[key]
+
+
+def make_burst(color, size=1100):
+    """Комиксный «взрыв» за текстом (вращается в ролике)."""
     Image, ImageDraw = bot.Image, bot.ImageDraw
-    S = 3
-    n = size * S
-    im = Image.new("RGBA", (n, n), (0, 0, 0, 0))
+    im = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     d = ImageDraw.Draw(im)
-    d.ellipse((0, 0, n - 1, n - 1), fill=_shade(color, 0.45) + (255,))
-    steps = 22
-    for i in range(steps):
-        t = i / (steps - 1)
-        r = n * (0.48 - 0.36 * t)
-        cx, cy = n * (0.5 - 0.12 * t), n * (0.5 - 0.14 * t)
-        d.ellipse((cx - r, cy - r, cx + r, cy + r), fill=_shade(color, 0.6 + 0.8 * t) + (255,))
-    d.ellipse((n * 0.22, n * 0.14, n * 0.46, n * 0.30), fill=(255, 255, 255, 190))
-    return im.resize((size, size), Image.LANCZOS)
+    c, spikes = size / 2, 16
+
+    def star(rk):
+        return [(c + c * (rk if i % 2 == 0 else rk * 0.80) * math.cos(math.pi * i / spikes),
+                 c + c * (rk if i % 2 == 0 else rk * 0.80) * math.sin(math.pi * i / spikes)) for i in range(spikes * 2)]
+    outer = star(0.98)
+    d.polygon(outer, fill=color + (255,))
+    d.line(outer + [outer[0]], fill=DARK + (255,), width=14, joint="curve")
+    core = tuple(int(v * 0.22 + dk * 0.78) for v, dk in zip(color, DARK))  # тёмное ядро: белый и жёлтый текст на нём читается
+    d.polygon(star(0.80), fill=core + (255,))
+    d.line(star(0.80) + [star(0.80)[0]], fill=(255, 255, 255, 210), width=6, joint="curve")
+    im.putalpha(im.getchannel("A").point(lambda v: int(v * 0.94)))
+    return im
 
 
-# ===================== ВЕДУЩИЙ: РОБОТ С МИКРОФОНОМ =====================
+def make_particles(seed=0, count=10):
+    """Искры и вращающиеся 3D-предметы (силовой куб, кристалл, звезда): ближние крупные у краёв, дальние мельче и бледнее."""
+    Image, ImageDraw, ImageFilter = bot.Image, bot.ImageDraw, bot.ImageFilter
+    rnd = random.Random(seed + 99)
+    parts = []
+    for i in range(count):
+        size = rnd.choice((28, 38, 54))
+        sp = Image.new("RGBA", (size * 2, size * 2), (0, 0, 0, 0))
+        sd = ImageDraw.Draw(sp)
+        c = size
+        sd.polygon([(c, 4), (c + size * .18, c - size * .18), (size * 2 - 4, c), (c + size * .18, c + size * .18),
+                    (c, size * 2 - 4), (c - size * .18, c + size * .18), (4, c), (c - size * .18, c - size * .18)],
+                   fill=(255, 255, 255, 200))
+        parts.append({"sp": sp, "x": rnd.randint(0, W), "y": rnd.randint(0, H + 200), "v": rnd.randint(60, 150),
+                      "sway": rnd.randint(14, 50), "ph": rnd.random() * 6.28})
+    rnd2 = random.Random(seed + 7)
+    sizes = (250, 200, 160, 130, 110, 220, 140)
+    for j, size in enumerate(sizes):
+        kind = ("cube", "gem", "star")[j % 3]
+        color = rnd2.choice(OBJ_COLORS[kind])
+        near = size >= 200
+        frames = obj_frames(kind, color, size, 30, 1.0 if near else 0.9)
+        x = rnd2.choice((rnd2.randint(-60, 40), rnd2.randint(W - size - 40, W - size + 60))) if near else rnd2.randint(0, W - size)
+        parts.append({"frames": frames, "x": x, "y": rnd2.randint(0, H + 200), "v": int(16 + size * 0.2),
+                      "sway": rnd2.randint(10, 34), "ph": rnd2.random() * 6.28, "rate": rnd2.randint(14, 22),
+                      "off": rnd2.randint(0, 29)})
+    return parts
+
+
 MASCOT_SIZE = (340, 510)
 
 
@@ -727,19 +845,46 @@ def make_mascot():
     return {(m, b): draw(m, b) for m in range(4) for b in (0, 1)}
 
 
-def make_host(png, name=""):
-    """Диктор: портрет бойца с микрофоном и именной плашкой. Рот не двигается, поэтому «говорит» он масштабом
-    и свечением в такт голосу. Спрайты по тем же ключам (рот, моргание), что и у робота."""
-    Image, ImageDraw, ImageFilter = bot.Image, bot.ImageDraw, bot.ImageFilter
-    im = Image.open(io.BytesIO(png)).convert("RGBA")
+def _prep_portrait(im):
+    """Если у портрета непрозрачный фон, вырезаем круг: иначе обводка-стикер пошла бы по прямоугольнику."""
+    Image, ImageDraw = bot.Image, bot.ImageDraw
+    im = im.convert("RGBA")
     a = im.getchannel("A")
     if min(a.getpixel(c) for c in ((0, 0), (im.width - 1, 0), (0, im.height - 1), (im.width - 1, im.height - 1))) > 200:
-        mask = Image.new("L", im.size, 0)  # фон портрета непрозрачный: вырезаем круг
+        mask = Image.new("L", im.size, 0)
         ImageDraw.Draw(mask).ellipse((0, 0, im.width - 1, im.height - 1), fill=255)
         im.putalpha(mask)
+    return im
+
+
+def _sticker(img, white=9, dark=6):
+    """Обводка как у наклейки: белая кайма и тёмный контур вокруг силуэта."""
+    Image, ImageFilter = bot.Image, bot.ImageFilter
+    pad = white + dark + 2
+    base = Image.new("RGBA", (img.width + 2 * pad, img.height + 2 * pad), (0, 0, 0, 0))
+    base.alpha_composite(img, (pad, pad))
+
+    def grow(alpha, r):
+        return alpha.filter(ImageFilter.GaussianBlur(r * 0.6)).point(lambda v: 255 if v > 12 else 0)
+    m1 = grow(base.getchannel("A"), white)
+    m2 = grow(m1, dark)
+    out = Image.new("RGBA", base.size, DARK + (255,))
+    out.putalpha(m2)
+    wl = Image.new("RGBA", base.size, (255, 255, 255, 255))
+    wl.putalpha(m1)
+    out.alpha_composite(wl)
+    out.alpha_composite(base)
+    return out
+
+
+def make_host(png, name=""):
+    """Диктор: портрет бойца-стикер с микрофоном и именной плашкой. Рот не двигается, поэтому «говорит» он масштабом,
+    свечением и звуковыми волнами в такт голосу. Спрайты по тем же ключам (рот, моргание), что и у робота."""
+    Image, ImageDraw, ImageFilter = bot.Image, bot.ImageDraw, bot.ImageFilter
+    im = _prep_portrait(Image.open(io.BytesIO(png)))
     MW, MH = MASCOT_SIZE
-    k = min(310 / im.width, 380 / im.height)
-    pm = im.resize((max(1, int(im.width * k)), max(1, int(im.height * k))), Image.LANCZOS)
+    k = min(280 / im.width, 350 / im.height)
+    pm = _sticker(im.resize((max(1, int(im.width * k)), max(1, int(im.height * k))), Image.LANCZOS))
     label = (name or "").upper()[:14]
 
     def draw(mouth):
@@ -750,13 +895,15 @@ def make_host(png, name=""):
         sh = Image.new("RGBA", (MW, MH), (0, 0, 0, 0))
         ImageDraw.Draw(sh).ellipse((40, MH - 92, MW - 40, MH - 52), fill=(0, 0, 0, 110))
         cv.alpha_composite(sh.filter(ImageFilter.GaussianBlur(7)))
-        sc = 1 + 0.03 * mouth
+        sc = 1 + 0.035 * mouth
         p2 = pm.resize((int(pm.width * sc), int(pm.height * sc)), Image.BILINEAR)
         cv.alpha_composite(p2, ((MW - p2.width) // 2, MH - 74 - p2.height))
         d = ImageDraw.Draw(cv)
         d.rounded_rectangle((258, 372, 280, 452), radius=9, fill=(70, 70, 90, 255), outline=DARK + (255,), width=4)  # микрофон
         d.ellipse((246, 336, 292, 382), fill=(190, 195, 215, 255), outline=DARK + (255,), width=4)
         d.line((250, 359, 288, 359), fill=(120, 125, 150, 255), width=3)
+        for r in (30, 46, 62)[:mouth]:  # звуковые волны
+            d.arc((269 - r, 359 - r, 269 + r, 359 + r), -42, 42, fill=YELLOW + (255,), width=7)
         if label:
             f = bot._fit(d, label, 290, 38, 22)
             d.rounded_rectangle((20, MH - 58, MW - 20, MH - 8), radius=22, fill=PURPLE + (255,), outline=(255, 255, 255, 235), width=4)
@@ -801,59 +948,73 @@ def sunburst(layer, cx, cy, radius=760, rays=14, alpha=34):
                    (cx + radius * math.cos(a1), cy + radius * math.sin(a1))], fill=(255, 255, 255, alpha))
 
 
-def chip(layer, cx, y, text, fill, color=(255, 255, 255), size=54, max_w=900):
+def _chip_draw(layer, cx, y, text, fill, color, size, max_w):
     d = bot.ImageDraw.Draw(layer)
     f = bot._fit(d, text, max_w, size, 24)
     w = d.textlength(text, font=f)
-    d.rounded_rectangle((cx - w / 2 - 36, y + 8, cx + w / 2 + 36, y + f.size + 52), radius=36, fill=(10, 4, 30, 150))
-    d.rounded_rectangle((cx - w / 2 - 36, y, cx + w / 2 + 36, y + f.size + 44), radius=36, fill=fill + (255,),
-                        outline=(255, 255, 255, 230), width=4)
-    d.text((cx, y + (f.size + 44) / 2), text, font=f, fill=color, anchor="mm")
+    box = (cx - w / 2 - 38, y, cx + w / 2 + 38, y + f.size + 44)
+    d.rounded_rectangle((box[0], box[1] + 12, box[2], box[3] + 12), radius=38, fill=DARK + (255,))      # «толщина» плашки
+    d.rounded_rectangle(box, radius=38, fill=fill + (255,), outline=(255, 255, 255, 255), width=5)
+    d.rounded_rectangle((box[0] + 14, box[1] + 8, box[2] - 14, box[1] + 20), radius=6, fill=(255, 255, 255, 70))  # блик
+    d.text((cx, y + (f.size + 44) / 2), text, font=f, fill=color, anchor="mm", stroke_width=2, stroke_fill=DARK + (255,))
+
+
+def chip(layer, cx, y, text, fill, color=(255, 255, 255), size=54, max_w=900, angle=0):
+    """Плашка-стикер с толщиной и бликом; angle наклоняет её (живее, чем ровная подпись)."""
+    if not angle:
+        return _chip_draw(layer, cx, y, text, fill, color, size, max_w)
+    tmp = bot.Image.new("RGBA", (W, 300), (0, 0, 0, 0))
+    _chip_draw(tmp, cx, 80, text, fill, color, size, max_w)
+    tmp = tmp.rotate(angle, resample=bot.Image.BICUBIC, center=(cx, 80 + (size + 44) / 2))
+    layer.alpha_composite(tmp, (0, y - 80))
 
 
 def L_title(title, subtitle="", accent=PURPLE):
     layer = new_layer()
-    sunburst(layer, W // 2, 500, 570)
     d = bot.ImageDraw.Draw(layer)
     f, lines = bot._fit_lines(d, title.upper(), 960, 620, start=150, minimum=70, max_lines=4)
     lh = int(f.size * 1.16)
     y0 = 500 - lh * len(lines) // 2
+    looks = [((255, 250, 170), (255, 170, 0)), ((255, 255, 255), (120, 215, 255))]  # строки разных цветов
     for i, line in enumerate(lines):
-        grad_text(layer, (W // 2, y0 + i * lh + lh // 2), line, f)
+        top, bottom = looks[i % 2]
+        grad_text(layer, (W // 2, y0 + i * lh + lh // 2), line, f, top=top, bottom=bottom, stroke=12, depth=24)
     if subtitle:
-        chip(layer, W // 2, 830, subtitle, accent, size=58)
+        chip(layer, W // 2, 790, subtitle, accent, size=58, angle=3)
+    layer.rot = -4  # весь кадр чуть наклонён: энергичнее ровной «презентации»
     return layer
 
 
 def L_hero(name, chip1="", chip2="", portrait=None, rank=None):
     layer = new_layer()
-    sunburst(layer, W // 2, 470, 600)
     d = bot.ImageDraw.Draw(layer)
     if portrait:
         try:
-            pm = bot._portrait(portrait, 600)
-            glow = bot.Image.new("RGBA", (W, H), (0, 0, 0, 0))
-            bot.ImageDraw.Draw(glow).ellipse((W // 2 - 330, 140, W // 2 + 330, 800), fill=YELLOW + (110,))
-            layer.alpha_composite(glow.filter(bot.ImageFilter.GaussianBlur(60)))
-            layer.alpha_composite(pm, (W // 2 - pm.width // 2, 470 - pm.height // 2))
+            pm = _sticker(_prep_portrait(bot._portrait(portrait, 560)), 16, 8)
+            sh = bot.Image.new("RGBA", (W, H), (0, 0, 0, 0))
+            bot.ImageDraw.Draw(sh).ellipse((W // 2 - 260, 640, W // 2 + 260, 720), fill=(0, 0, 0, 120))
+            layer.alpha_composite(sh.filter(bot.ImageFilter.GaussianBlur(14)))
+            layer.alpha_composite(pm, (W // 2 - pm.width // 2, 420 - pm.height // 2))
         except Exception:
             portrait = None
     if not portrait:
-        d.rounded_rectangle((W // 2 - 280, 190, W // 2 + 280, 750), radius=90, fill=PURPLE + (255,), outline=DARK + (255,), width=8)
-        d.text((W // 2, 470), name[:2].upper(), font=bot.card_font(260), fill=(255, 255, 255, 255), anchor="mm")
+        d.rounded_rectangle((W // 2 - 270, 180, W // 2 + 270, 700), radius=90, fill=PURPLE + (255,), outline=(255, 255, 255, 255), width=10)
+        d.text((W // 2, 440), name[:2].upper(), font=bot.card_font(260), fill=(255, 255, 255, 255), anchor="mm",
+               stroke_width=8, stroke_fill=DARK + (255,))
     if rank:
-        grad_text(layer, (150, 235), f"#{rank}", bot.card_font(200), stroke=11)
+        grad_text(layer, (170, 250), f"#{rank}", bot.card_font(230), stroke=13, depth=26)
     title = name.upper()
-    grad_text(layer, (W // 2, 850), title, bot._fit(d, title, 940, 124, 56), top=(255, 255, 255), bottom=(205, 190, 255), stroke=9)
+    grad_text(layer, (W // 2, 770), title, bot._fit(d, title, 960, 132, 56), top=(255, 255, 255), bottom=(190, 170, 255),
+              stroke=11, depth=22)
     if chip1:
-        chip(layer, W // 2 if not chip2 else W // 2 - 255, 912, chip1, ORANGE, size=48, max_w=900 if not chip2 else 400)
+        chip(layer, W // 2 if not chip2 else W // 2 - 255, 880, chip1, ORANGE, size=48, max_w=900 if not chip2 else 400, angle=-4)
     if chip2:
-        chip(layer, W // 2 + 255, 912, chip2, GREEN, size=48, max_w=400)
+        chip(layer, W // 2 + 255, 880, chip2, GREEN, size=48, max_w=400, angle=4)
+    layer.rot = 3 if len(name) % 2 == 0 else -3
     return layer
 
 
 TEXT_W, TEXT_H, TEXT_START, TEXT_MIN, TEXT_LINES = 880, 600, 70, 46, 10
-DIM_COLOR, LIT_COLOR = (196, 190, 232, 255), (255, 255, 255, 255)
 
 
 def fit_exact(draw, text, max_w=TEXT_W, max_h=TEXT_H, start=TEXT_START, minimum=TEXT_MIN, max_lines=TEXT_LINES):
@@ -870,122 +1031,45 @@ def fit_exact(draw, text, max_w=TEXT_W, max_h=TEXT_H, start=TEXT_START, minimum=
 
 
 def _probe():
-    return bot.ImageDraw.Draw(bot.Image.new("RGBA", (10, 10)))
-
-
-def text_fits(text):
-    return fit_exact(_probe(), text) is not None
-
-
-def _split_words(p, fits):
-    """Режет длинное предложение по словам, по возможности после запятой, ничего не теряя."""
-    words, out, cur = p.split(), [], []
-    for w in words:
-        if cur and not fits(" ".join(cur + [w])):
-            cut = next((i for i in range(len(cur) - 1, len(cur) // 2 - 1, -1) if cur[i].endswith((",", ";", ":", "—"))), None)
-            if cut is not None and cut < len(cur) - 1:
-                out.append(" ".join(cur[:cut + 1]))
-                cur = cur[cut + 1:]
-            else:
-                out.append(" ".join(cur))
-                cur = []
-        cur.append(w)
-    if cur:
-        out.append(" ".join(cur))
-    return out
-
-
-def chunk_text(text, fits=None):
-    """Делит текст на части, каждая из которых целиком помещается на экран. Слова не теряются (проверяется тестом)."""
-    fits = fits or text_fits
-    text = re.sub(r"\s+", " ", (text or "").strip())
-    if not text:
-        return []
-    if fits(text):
-        return [text]
-    pieces = []
-    for sent in re.split(r"(?<=[.!?…])\s+", text):
-        pieces.extend([sent] if fits(sent) else _split_words(sent, fits))
-    out, cur = [], ""
-    for piece in pieces:
-        cand = (cur + " " + piece).strip()
-        if cur and not fits(cand):
-            out.append(cur)
-            cur = piece
-        else:
-            cur = cand
-    if cur:
-        out.append(cur)
-    if len(out) > 1 and len(out[-1].split()) <= 2:  # одинокие слова в хвосте выглядят плохо: добавляем к предыдущей части
-        merged = out[-2] + " " + out[-1]
-        if fits(merged):
-            out[-2:] = [merged]
-    return out
-
-
-def L_text(heading, body, accent=ORANGE):
-    """Слой с текстом. Каждое слово рисуется отдельно (приглушённым цветом), координаты слов лежат в layer.words
-    для подсветки в такт голосу. Если текст не влезает, он НЕ обрезается: заранее его делит chunk_text."""
-    layer = new_layer()
-    chip(layer, W // 2, 210, heading, accent, size=60)
-    d = bot.ImageDraw.Draw(layer)
-    ledge = tuple(int(c * 0.45) for c in accent) + (255,)
-    d.rounded_rectangle((50, 362, W - 50, 1062), radius=56, fill=ledge)  # толстый нижний край: панель выглядит объёмной
-    d.rounded_rectangle((50, 350, W - 50, 1050), radius=56, fill=(14, 6, 50, 235), outline=accent + (255,), width=6)
-    d.rounded_rectangle((90, 364, W - 90, 374), radius=5, fill=(255, 255, 255, 46))  # блик сверху
-    fit = fit_exact(d, body)
-    if fit is None:  # крайний случай (одно очень длинное слово): мельче и больше строк
-        fit = fit_exact(d, body, TEXT_W, TEXT_H + 40, 40, 28, 14) or bot._fit_lines(d, body, TEXT_W, TEXT_H, start=40, minimum=28, max_lines=14)
-        print("текст не влез в обычную рамку, взят мелкий шрифт:", body[:60])
-    f, lines = fit
-    lh = int(f.size * 1.26)
-    y0 = 700 - lh * len(lines) // 2
-    words = []
-    for i, line in enumerate(lines):
-        yc = y0 + i * lh + lh // 2
-        x = W / 2 - d.textlength(line, font=f) / 2
-        parts = line.split(" ")
-        for j, word in enumerate(parts):
-            wx = x + d.textlength(" ".join(parts[:j]) + (" " if j else ""), font=f)
-            d.text((wx, yc), word, font=f, fill=DIM_COLOR, anchor="lm")
-            words.append({"word": word, "x": wx, "y": yc, "font": f})
-    layer.words = words
-    return layer
+    return bot.Image and bot.ImageDraw.Draw(bot.Image.new("RGBA", (10, 10)))
 
 
 _GID = itertools.count(1)
 
 
+def L_kinetic(heading, accent):
+    """Слайд с «бегущими» словами: в слое только плашка-заголовок, сами слова рисуются по кадрам (см. paste_kinetic)."""
+    layer = new_layer()
+    chip(layer, W // 2, 250, heading, accent, size=62, max_w=860, angle=-4)
+    return layer
+
+
 def text_specs(heading, body, accent=ORANGE, priority=5, say_first=""):
-    """Слайды с текстом: если не помещается на один экран, делится на несколько (слова не теряются).
-    Озвучивается ровно то, что написано на экране (say_first проговаривается только перед первой частью)."""
-    chunks = chunk_text(body)
-    gid = f"t{next(_GID)}"
-    out = []
-    for i, ch in enumerate(chunks):
-        head = heading if len(chunks) == 1 else f"{heading} {i + 1}/{len(chunks)}"
-        layer = L_text(head, ch, accent)
-        lead = say_first if i == 0 else ""
-        out.append({"layer": layer, "speech": (lead + " " + ch).strip(), "lead": lead, "caption": "",
-                    "priority": priority, "group": gid, "words": layer.words, "accent": accent, "sfx": "pop"})
-    return out
+    """Текстовый слайд: слова появляются по одному в такт голосу (по 2-3 слова на экране), поэтому текст никогда
+    не обрезается и не теряет смысл. Озвучивается ровно то, что написано (say_first проговаривается перед текстом)."""
+    body = re.sub(r"\s+", " ", (body or "").strip())
+    if not body:
+        return []
+    return [{"layer": L_kinetic(heading, accent), "speech": (say_first + " " + body).strip(), "lead": say_first,
+             "caption": "", "priority": priority, "group": f"t{next(_GID)}", "words": [{"word": w} for w in body.split(" ")],
+             "accent": accent, "sfx": "pop", "kind": "kinetic"}]
 
 
 def L_cta(handle, qr_url):
     layer = new_layer()
-    sunburst(layer, W // 2, 560, 510, alpha=28)
     d = bot.ImageDraw.Draw(layer)
-    f = bot._fit(d, "СКАНИРУЙ И ПОДПИСЫВАЙСЯ", 980, 84, 44)
     if qr_url:
-        grad_text(layer, (W // 2, 215), "СКАНИРУЙ", bot._fit(d, "СКАНИРУЙ", 900, 120, 50))
-        tile = qr_tile(qr_url, 450)
-        d.rounded_rectangle((W // 2 - 255, 320, W // 2 + 255, 830), radius=60, fill=(255, 214, 64, 255), outline=DARK + (255,), width=8)
-        layer.alpha_composite(tile, (W // 2 - tile.width // 2, 575 - tile.height // 2))
+        grad_text(layer, (W // 2, 200), "СКАНИРУЙ", bot._fit(d, "СКАНИРУЙ", 900, 120, 50), stroke=11, depth=22)
+        tile = qr_tile(qr_url, 440)
+        d.rounded_rectangle((W // 2 - 255, 314, W // 2 + 255, 824), radius=64, fill=(170, 110, 0, 255))
+        d.rounded_rectangle((W // 2 - 255, 300, W // 2 + 255, 810), radius=64, fill=(255, 214, 64, 255), outline=DARK + (255,), width=9)
+        layer.alpha_composite(tile, (W // 2 - tile.width // 2, 555 - tile.height // 2))
     else:
-        grad_text(layer, (W // 2, 330), "ПОДПИСЫВАЙСЯ", bot._fit(d, "ПОДПИСЫВАЙСЯ", 940, 120, 50))
+        grad_text(layer, (W // 2, 330), "ПОДПИСЫВАЙСЯ", bot._fit(d, "ПОДПИСЫВАЙСЯ", 940, 120, 50), stroke=11, depth=22)
     if handle:
-        grad_text(layer, (W // 2, 876), handle, bot._fit(d, handle, 900, 76, 44), top=(255, 255, 255), bottom=(160, 215, 255), stroke=8)
-    chip(layer, W // 2, 945, "ссылка в профиле", (255, 255, 255), color=DARK, size=44)
+        grad_text(layer, (W // 2, 862), handle, bot._fit(d, handle, 900, 76, 44), top=(255, 255, 255), bottom=(160, 215, 255),
+                  stroke=9, depth=16)
+    chip(layer, W // 2, 925, "ссылка в профиле", (255, 255, 255), color=DARK, size=44, angle=-2)
     return layer
 
 
@@ -1002,6 +1086,11 @@ def _crop_layer(layer):
 
 
 CONTENT_DY, MASCOT_Y, BUBBLE_Y = -70, 985, 1000   # всё выше: низ экрана (~400 px) закрывает интерфейс TikTok
+KIN_CY, KIN_W = 610, 960                           # центр и ширина блока «бегущих» слов
+BURST_Y = {"kinetic": KIN_CY, "title": 440, "hero": 390, "cta": 480}
+PROPS = {"title": [("star", YELLOW, 250, 150, 340), ("cube", (70, 225, 95), 220, W - 150, 330)],
+         "hero": [("star", YELLOW, 190, 120, 330), ("gem", (80, 175, 255), 190, W - 120, 330)],
+         "cta": [("star", YELLOW, 200, 120, 290), ("gem", PINK, 200, W - 120, 290)]}
 ENTRY = [(0, 70), (-520, 0), (520, 0), (0, -130)]   # откуда «влетает» слайд: снизу, слева, справа, сверху
 
 
@@ -1034,78 +1123,131 @@ def tilt(img, s):
     return img.transform((w, h), mode, _coeffs(dst, src), bot.Image.BILINEAR)
 
 
-def render_frames(slides, bg, particles, sprites, total):
-    """Кадры ролика: плывущий фон и частицы, появление слайда «с отскоком», дышащий ведущий, пузырь с репликой."""
+def _orient(layer):
+    """Наклон всего кадра (rot задаёт L_title / L_hero)."""
+    rot = getattr(layer, "rot", 0)
+    return layer.rotate(rot, resample=bot.Image.BICUBIC, center=(W // 2, 520)) if rot else layer
+
+
+_BURSTS = {}
+
+
+def get_burst(color):
+    if color not in _BURSTS:
+        _BURSTS[color] = make_burst(color)
+    return _BURSTS[color]
+
+
+def _scaled(img, sc):
+    if abs(sc - 1) < 0.01:
+        return img
+    return img.resize((max(1, int(img.width * sc)), max(1, int(img.height * sc))), bot.Image.BILINEAR)
+
+
+def render_frames(slides, bgs, particles, sprites, total):
+    """Кадры ролика: яркий фон с параллаксом, вращающиеся 3D-предметы, комиксный взрыв за героем, слова «в такт» голосу,
+    диктор-стикер, быстрые склейки (полоса-шторка, RGB-сдвиг, вспышка, наезд камеры)."""
+    from PIL import ImageChops
     Image, ImageDraw = bot.Image, bot.ImageDraw
-    top = Image.new("RGBA", (W, 150), (0, 0, 0, 0))
-    ImageDraw.Draw(top).text((54, 78), "NEW BRAWL NEWS", font=bot.card_font(44), fill=(255, 255, 255, 255), anchor="lm",
-                             stroke_width=4, stroke_fill=DARK + (255,))
-    done = 0
+    logo = Image.new("RGBA", (W, 150), (0, 0, 0, 0))
+    ld = ImageDraw.Draw(logo)
+    ld.rounded_rectangle((36, 34, 546, 112), radius=39, fill=DARK + (235,), outline=(255, 255, 255, 240), width=4)
+    ld.text((112, 73), "NEW BRAWL NEWS", font=bot.card_font(38), fill=(255, 255, 255, 255), anchor="lm")
     white = Image.new("RGB", (W, H), (255, 255, 255))
+    starts, acc = [], 0
+    for sl in slides:
+        starts.append(acc)
+        acc += max(1, round(sl["dur"] * FPS))
+    done = 0
     for si, sl in enumerate(slides):
         n = max(1, round(sl["dur"] * FPS))
         content, (cx, cy) = sl["content"]
         cy += CONTENT_DY
         bubble = sl.get("bubble")
-        kar = sl.get("karaoke")
-        tint = Image.new("RGB", (W, H), sl.get("accent") or PURPLE)
+        kin = sl.get("kin")
+        bg = bgs[si % len(bgs)]
+        bcolor = BURST_COLORS[si % len(BURST_COLORS)]
+        burst = get_burst(bcolor) if sl.get("burst", True) else None
+        by = sl.get("burst_y", 560)
+        props = [(obj_frames(k_, c_, sz, 30), x_, y_) for k_, c_, sz, x_, y_ in sl.get("props", [])]
         ent = ENTRY[sl.get("anim", 0) % len(ENTRY)]
         for k in range(n):
             gt = (done + k) / FPS
-            ox = int(110 + 100 * math.sin(gt * 0.55))
-            oy = int(160 + 130 * math.cos(gt * 0.40))
+            ox = int(110 + 100 * math.sin(gt * 0.9))
+            oy = int(160 + 130 * math.cos(gt * 0.7))
             if k < 6 and si > 0:  # короткая «тряска камеры» при смене слайда
-                ox += int(16 * math.sin(k * 3.3) * (1 - k / 6))
-                oy += int(12 * math.cos(k * 2.7) * (1 - k / 6))
-            frame = Image.blend(bg.crop((ox, oy, ox + W, oy + H)), tint, 0.13)  # фон слегка окрашивается цветом слайда
+                ox += int(18 * math.sin(k * 3.3) * (1 - k / 6))
+                oy += int(14 * math.cos(k * 2.7) * (1 - k / 6))
+            frame = bg.crop((ox, oy, ox + W, oy + H))
+            pe = _ease_out_back(min(1.0, k / POP_FRAMES))
             for p in particles:
-                py = (p["y"] - p["v"] * gt) % (H + 260) - 130
+                py = (p["y"] - p["v"] * gt) % (H + 300) - 150
                 px = p["x"] + p["sway"] * math.sin(gt * 0.9 + p["ph"])
-                frame.paste(p["sp"], (int(px), int(py)), p["sp"])
-            # контент: появляется с отскоком, потом чуть «парит»
+                spr = p["frames"][int(gt * p["rate"] + p["off"]) % len(p["frames"])] if "frames" in p else p["sp"]
+                frame.paste(spr, (int(px), int(py)), spr)
+            if burst is not None:
+                b = _scaled(burst.rotate(gt * 16 + si * 30, resample=Image.BILINEAR), 0.55 + 0.45 * pe)
+                frame.paste(b, (W // 2 - b.width // 2, by - b.height // 2), b)
+            for i, (frs, px_, py_) in enumerate(props):
+                spr = _scaled(frs[int(gt * 20 + i * 11) % len(frs)], 0.4 + 0.6 * pe)
+                frame.paste(spr, (px_ - spr.width // 2, int(py_ - spr.height // 2 + 12 * math.sin(gt * 3 + i * 2))), spr)
+            # контент: появляется с отскоком и наклоном, потом чуть «парит» и медленно наезжает
             if k < POP_FRAMES:
                 pr = k / POP_FRAMES
-                e = _ease_out_back(pr)
-                s = 0.80 + 0.20 * e
-                lay = content.resize((max(1, int(content.width * s)), max(1, int(content.height * s))), Image.BILINEAR)
+                lay = _scaled(content, 0.80 + 0.20 * pe)
                 a = 0.35 + 0.65 * min(1.0, pr * 1.6)
                 if a < 1.0:
+                    lay = lay.copy()  # _scaled может вернуть сам content: менять его нельзя
                     lay.putalpha(lay.split()[3].point(lambda v, a=a: int(v * a)))
-                lay = tilt(lay, (1 - e) * 0.95 * (1 if sl.get("anim", 0) % 2 == 0 else -1))
-                x = cx + (content.width - lay.width) // 2 + int((1 - e) * ent[0])
-                y = cy + (content.height - lay.height) // 2 + int((1 - e) * ent[1])
-                frame.paste(lay, (x, y), lay)
-            elif kar:
-                frame.paste(content, (cx, cy), content)  # текст стоит ровно: поверх него подсвечиваются слова
-                tt = (k + 0.5) / FPS
-                paste_karaoke(frame, kar, tt)
+                lay = tilt(lay, (1 - pe) * 0.95 * (1 if sl.get("anim", 0) % 2 == 0 else -1))
+                x = cx + (content.width - lay.width) // 2 + int((1 - pe) * ent[0])
+                y = cy + (content.height - lay.height) // 2 + int((1 - pe) * ent[1])
             else:
-                zoom = 1 + 0.05 * min(1.0, (k - POP_FRAMES) / max(1, n - POP_FRAMES))  # медленный наезд камеры
-                lay = content.resize((int(content.width * zoom), int(content.height * zoom)), Image.BILINEAR)
-                frame.paste(lay, (cx + (content.width - lay.width) // 2, cy + (content.height - lay.height) // 2
-                                  + int(8 * math.sin(gt * 2.4))), lay)
+                lay = _scaled(content, 1 + 0.05 * min(1.0, (k - POP_FRAMES) / max(1, n - POP_FRAMES)))
+                x = cx + (content.width - lay.width) // 2
+                y = cy + (content.height - lay.height) // 2 + int(8 * math.sin(gt * 2.4))
+            frame.paste(lay, (x, y), lay)
+            if kin:
+                paste_kinetic(frame, kin, (k + 0.5) / FPS)
             # ведущий
             blink = 1 if (gt % 3.3) < 0.15 else 0
             mouth = sl["mouth"][k] if k < len(sl["mouth"]) else 0
             spr = sprites[(mouth, blink)]
             bob = int(9 * math.sin(gt * 5.2)) if mouth else int(6 * math.sin(gt * 2.4))
             if k < POP_FRAMES:
-                s2 = 0.85 + 0.15 * _ease_out_back(k / POP_FRAMES)
-                sp2 = spr.resize((int(spr.width * s2), int(spr.height * s2)), Image.BILINEAR)
+                sp2 = _scaled(spr, 0.85 + 0.15 * pe)
                 frame.paste(sp2, (30 + (spr.width - sp2.width) // 2, MASCOT_Y + (spr.height - sp2.height) + bob), sp2)
             else:
                 frame.paste(spr, (30, MASCOT_Y + bob), spr)
             if bubble is not None:
-                if k < POP_FRAMES:
-                    s3 = 0.7 + 0.3 * _ease_out_back(k / POP_FRAMES)
-                    bb = bubble.resize((max(1, int(bubble.width * s3)), max(1, int(bubble.height * s3))), Image.BILINEAR)
-                else:
-                    bb = bubble
+                bb = _scaled(bubble, 0.7 + 0.3 * pe) if k < POP_FRAMES else bubble
                 frame.paste(bb, (360, BUBBLE_Y + (bubble.height - bb.height) // 2), bb)
-            if si > 0 and k < 3:  # вспышка на склейке
-                frame = Image.blend(frame, white, 0.30 - 0.10 * k)
-            frame.paste(top, (0, 0), top)
-            ImageDraw.Draw(frame).rectangle((0, 0, int(W * (done + k + 1) / max(1, total)), 12), fill=YELLOW)
+            if si > 0 and k < 6:  # наезд камеры при смене слайда
+                z = 1 + 0.07 * (1 - k / 6)
+                w2, h2 = int(W / z), int(H / z)
+                frame = frame.crop(((W - w2) // 2, (H - h2) // 2, (W - w2) // 2 + w2, (H - h2) // 2 + h2)).resize((W, H), Image.BILINEAR)
+            if si > 0 and k < 4:  # RGB-сдвиг, как глитч
+                amt = 20 - 5 * k
+                r, g, b_ = frame.split()
+                frame = Image.merge("RGB", (ImageChops.offset(r, amt, 0), g, ImageChops.offset(b_, -amt, 0)))
+            if si > 0 and k < 8:  # диагональная полоса-шторка пролетает через кадр
+                x0 = int(-520 + (k / 7) * (W + 1100))
+                dr = ImageDraw.Draw(frame)
+                dr.polygon([(x0, 0), (x0 + 420, 0), (x0 + 160, H), (x0 - 260, H)], fill=bcolor)
+                dr.polygon([(x0 + 420, 0), (x0 + 470, 0), (x0 + 210, H), (x0 + 160, H)], fill=DARK)
+            if si > 0 and k < 2:  # вспышка на склейке
+                frame = Image.blend(frame, white, 0.35 - 0.15 * k)
+            frame.paste(logo, (0, 0), logo)
+            dr = ImageDraw.Draw(frame)
+            dr.ellipse((58, 62, 80, 84), fill=(255, 60, 70) if int(gt * 2) % 2 == 0 else (120, 30, 50))  # «эфир»
+            for j, st0 in enumerate(starts):  # прогресс по слайдам: у каждого свой сегмент
+                en = starts[j + 1] if j + 1 < len(starts) else total
+                x0, x1 = int(W * st0 / total) + 3, int(W * en / total) - 3
+                x1 = max(x1, x0)
+                dr.rectangle((x0, 0, x1, 11), fill=(70, 50, 130))
+                cur = done + k + 1
+                if cur > st0:
+                    dr.rectangle((x0, 0, max(x0, min(x1, int(W * cur / total))), 11), fill=YELLOW)
             yield frame.tobytes()
         done += n
 
@@ -1206,41 +1348,11 @@ def word_times(words, lead, span):
     return out
 
 
-KAR_LEAD, KAR_FADE, KAR_LEVELS = 0.07, 0.18, 5
-
-
-def build_karaoke(words, times):
-    """Подсветка слов: плашка со свечением плавно разгорается перед словом и плавно гаснет после него,
-    произнесённое слово остаётся белым. Размер букв не меняется, поэтому слова точно совпадают с текстом под ними."""
-    Image, ImageDraw, ImageFilter = bot.Image, bot.ImageDraw, bot.ImageFilter
-    probe, out, G, pad = _probe(), [], 22, 4
-    for w, (t0, t1) in zip(words, times):
-        f = w["font"]
-        tw, th = int(probe.textlength(w["word"], font=f)) + 8, int(f.size * 1.5)
-        lit = Image.new("RGBA", (tw, th), (0, 0, 0, 0))
-        ImageDraw.Draw(lit).text((4, th // 2), w["word"], font=f, fill=LIT_COLOR, anchor="lm")
-        cw, ch, hh = tw + 2 * pad + 2 * G, th + 2 * G, int(f.size * 0.56)
-        box = (G + 2, ch // 2 - hh, cw - G - 3, ch // 2 + hh)
-        glow = Image.new("RGBA", (cw, ch), (0, 0, 0, 0))
-        ImageDraw.Draw(glow).rounded_rectangle(box, radius=16, fill=YELLOW + (210,))
-        cur = glow.filter(ImageFilter.GaussianBlur(11))
-        pill = Image.new("RGBA", (cw, ch), (0, 0, 0, 0))
-        pd = ImageDraw.Draw(pill)
-        pd.rounded_rectangle(box, radius=16, fill=YELLOW + (255,))
-        pd.text((G + pad + 4, ch // 2), w["word"], font=f, fill=DARK + (255,), anchor="lm")
-        cur.alpha_composite(pill)
-        levels = []
-        for lv in range(1, KAR_LEVELS + 1):
-            sp = cur.copy()
-            sp.putalpha(sp.getchannel("A").point(lambda v, a=lv / KAR_LEVELS: int(v * a)))
-            levels.append(sp)
-        px, py = int(w["x"]) - 4, int(w["y"] - th / 2) + CONTENT_DY
-        out.append({"lit": lit, "levels": levels, "px": px, "py": py, "cx": px - pad - G, "cy": py - G, "t0": t0, "t1": t1})
-    return out
+KAR_LEAD, KAR_FADE = 0.07, 0.18
 
 
 def karaoke_alpha(wd, tt):
-    """Яркость плашки слова в момент tt (0..1) и признак «слово уже прозвучало»."""
+    """Яркость подсветки слова в момент tt (0..1) и признак «слово уже прозвучало»: плавно разгорается и гаснет."""
     if tt < wd["t0"] - KAR_LEAD:
         return 0.0, False
     if tt < wd["t0"]:
@@ -1250,15 +1362,128 @@ def karaoke_alpha(wd, tt):
     return max(0.0, 1.0 - (tt - wd["t1"]) / KAR_FADE), True
 
 
-def paste_karaoke(frame, kar, tt):
-    for wd in kar:
-        al, spoken_ = karaoke_alpha(wd, tt)
-        if spoken_:
-            frame.paste(wd["lit"], (wd["px"], wd["py"]), wd["lit"])
-        lv = int(round(al * KAR_LEVELS))
-        if lv >= 1:
-            sp = wd["levels"][lv - 1]
-            frame.paste(sp, (wd["cx"], wd["cy"]), sp)
+_HOT_NAMES = None
+
+
+def _is_hot(word):
+    """Цифры, проценты, сокращения и имена бойцов выделяются цветом."""
+    global _HOT_NAMES
+    if _HOT_NAMES is None:
+        _HOT_NAMES = {x.lower() for x in list(NAME_SAY.values()) + list(bot.BRAWLERS)}
+    w = re.sub(r"[^\w%]", "", word)
+    return bool(re.search(r"\d", w)) or (len(w) > 1 and w.isupper()) or w.lower() in _HOT_NAMES
+
+
+def _kin_fit(words, minimum=58):
+    """Шрифт и разбивка на строки (до двух), при которых фраза целиком влезает по ширине."""
+    probe = _probe()
+    for size in range(150, minimum - 1, -6):
+        f = bot.card_font(size)
+        lines, cur, ok = [], [], True
+        for w in words:
+            if probe.textlength(w, font=f) > KIN_W:
+                ok = False
+                break
+            if cur and probe.textlength(" ".join(cur + [w]), font=f) > KIN_W:
+                lines.append(cur)
+                cur = []
+            cur.append(w)
+        if ok:
+            lines.append(cur)
+            if len(lines) <= 2:
+                return f, lines
+    return None
+
+
+def _fit_group(words, g):
+    if len(g) == 1 or _kin_fit([words[i] for i in g], 96):  # из нескольких слов экран только с крупным шрифтом
+        return [g]
+    half = len(g) // 2
+    return _fit_group(words, g[:half]) + _fit_group(words, g[half:])
+
+
+def split_phrases(words, maxw=3):
+    """Делит слова на короткие экраны по 1-3 слова (по знакам препинания), ничего не теряя. Возвращает списки индексов."""
+    groups, cur = [], []
+    for i, w in enumerate(words):
+        cur.append(i)
+        end = w.rstrip("»\"')").endswith((".", "!", "?", "…"))
+        if len(cur) >= maxw or end or (w.endswith((",", ";", ":", "—")) and len(cur) >= 2):
+            groups.append(cur)
+            cur = []
+    if cur:
+        groups.append(cur)
+    if len(groups) > 1 and len(groups[-1]) == 1 and len(groups[-2]) < maxw and not words[groups[-2][-1]].endswith((".", "!", "?", "…")):
+        groups[-2:] = [groups[-2] + groups[-1]]  # одинокое слово в хвосте приклеиваем к предыдущему экрану
+    out = []
+    for g in groups:
+        out.extend(_fit_group(words, g))
+    return out
+
+
+def _kin_sprite(word, f, hot, cur, angle):
+    """Слово крупными объёмными буквами: обычное (белое), «звучащее» (жёлтое) или выделенное (бирюзовое)."""
+    probe = _probe()
+    pad = int(f.size * 0.55)
+    w, h = int(probe.textlength(word, font=f)) + 2 * pad, int(f.size * 1.4) + 2 * pad
+    lay = bot.Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    if hot:
+        top, bottom = ((255, 255, 255), (110, 235, 255)) if cur else ((190, 255, 235), (60, 225, 150))
+    else:
+        top, bottom = ((255, 252, 200), (255, 196, 0)) if cur else ((255, 255, 255), (212, 205, 255))
+    grad_text(lay, (w // 2, h // 2), word, f, top=top, bottom=bottom, stroke=max(6, int(f.size * 0.085)), outline=DARK,
+              depth=max(8, int(f.size * 0.12)))
+    return lay.rotate(angle, resample=bot.Image.BICUBIC) if angle else lay
+
+
+def build_kinetic(words, times):
+    """Готовит экраны со словами: для каждого слова два спрайта (обычный и «звучащий»), позиция и время звучания."""
+    probe = _probe()
+    texts = [w["word"] for w in words]
+    phrases = []
+    for g in split_phrases(texts):
+        ws = [texts[i] for i in g]
+        fit = _kin_fit(ws) or _kin_fit(ws, minimum=30)
+        f, lines = fit if fit else (bot.card_font(30), [ws])
+        lh = int(f.size * 1.12)
+        y0 = KIN_CY - lh * (len(lines) - 1) / 2
+        items, idx = [], 0
+        for li, line in enumerate(lines):
+            yc = y0 + li * lh
+            x0 = W / 2 - probe.textlength(" ".join(line), font=f) / 2
+            for j, w in enumerate(line):
+                wx = x0 + probe.textlength(" ".join(line[:j]) + (" " if j else ""), font=f) + probe.textlength(w, font=f) / 2
+                gi = g[idx]
+                idx += 1
+                hot, ang = _is_hot(w), (-3, 2, -2, 3, 0)[gi % 5]
+                items.append({"n": _kin_sprite(w, f, hot, False, ang), "c": _kin_sprite(w, f, hot, True, ang),
+                              "cx": wx, "cy": yc, "t0": times[gi][0], "t1": times[gi][1]})
+        phrases.append({"start": times[g[0]][0], "words": items})
+    return phrases
+
+
+def paste_kinetic(frame, kin, tt):
+    """Рисует текущий экран: слова «выскакивают» по мере озвучки, звучащее слово плавно желтеет и чуть крупнее."""
+    ph = None
+    for p in kin:
+        if tt + 0.03 >= p["start"]:
+            ph = p
+        else:
+            break
+    if ph is None:
+        ph = kin[0]  # до начала речи показываем бледный предпросмотр первого экрана
+    for w in ph["words"]:
+        age = tt - w["t0"] + 0.03
+        if age < 0:  # слово ещё не прозвучало: бледная подсказка на своём месте
+            ghost = w["n"].copy()
+            ghost.putalpha(ghost.getchannel("A").point(lambda v: int(v * 0.30)))
+            frame.paste(ghost, (int(w["cx"] - ghost.width / 2), int(w["cy"] - ghost.height / 2)), ghost)
+            continue
+        al, _ = karaoke_alpha(w, tt)
+        spr = w["n"] if al <= 0.01 else (w["c"] if al >= 0.99 else bot.Image.blend(w["n"], w["c"], al))
+        sc = (0.45 + 0.55 * _ease_out_back(min(1.0, age / 0.18))) * (1 + 0.05 * al)
+        spr = _scaled(spr, sc)
+        frame.paste(spr, (int(w["cx"] - spr.width / 2), int(w["cy"] - spr.height / 2)), spr)
 
 
 def render_video(specs, out_path, vstate=None, seed=0, host=None):
@@ -1287,7 +1512,7 @@ def render_video(specs, out_path, vstate=None, seed=0, host=None):
             slides.append({"layer": sp["layer"], "caption": sp.get("caption", ""), "voice_wav": wav, "dur": dur,
                            "voice_dur": audio_duration(wav) if wav else 0.0, "priority": sp.get("priority", 5),
                            "group": sp.get("group") or f"s{i}", "words": sp.get("words"), "lead": sp.get("lead", ""),
-                           "accent": sp.get("accent"), "sfx": sp.get("sfx", "whoosh")})
+                           "accent": sp.get("accent"), "sfx": sp.get("sfx", "whoosh"), "kind": sp.get("kind", "")})
         while sum(s["dur"] for s in slides) > MAX_VIDEO_SEC and len(slides) > 2:
             groups = {}
             for sl in slides[1:-1]:
@@ -1305,8 +1530,10 @@ def render_video(specs, out_path, vstate=None, seed=0, host=None):
             sl["anim"] = idx
             if sl.get("words"):
                 span = sl["voice_dur"] if sl.get("voice_wav") else max(0.5, sl["dur"] - 0.3)
-                sl["karaoke"] = build_karaoke(sl["words"], word_times(sl["words"], sl.get("lead", ""), span))
-            sl["content"] = _crop_layer(sl["layer"])
+                sl["kin"] = build_kinetic(sl["words"], word_times(sl["words"], sl.get("lead", ""), span))
+            sl["burst_y"] = BURST_Y.get(sl["kind"], 560)
+            sl["props"] = PROPS.get(sl["kind"], [])
+            sl["content"] = _crop_layer(_orient(sl["layer"]))
             sl["bubble"] = make_bubble(sl["caption"]) if sl["caption"] else None
             sl["mouth"] = [mouth_state(v) for v in (envelope(sl["voice_wav"], FPS, n) if sl["voice_wav"] else [0.0] * n)]
         total_sec = sum(s["dur"] for s in slides)
@@ -1318,7 +1545,7 @@ def render_video(specs, out_path, vstate=None, seed=0, host=None):
                 sprites = make_host(*host)
             except Exception as ex:
                 print("диктор-персонаж не получился, беру робота:", ex)
-        encode_video(render_frames(slides, make_bg(seed), make_particles(seed), sprites or make_mascot(), total_frames), silent)
+        encode_video(render_frames(slides, [make_bg(seed, i) for i in range(3)], make_particles(seed), sprites or make_mascot(), total_frames), silent)
         voice_track, sfx_track = build_audio_tracks(slides, workdir)
         music = pick_music(vstate)
         mux(silent, voice_track, sfx_track, music, total_sec, out_path)
@@ -1370,7 +1597,7 @@ HOOKS = [("Кто сильнее всех?", "мета Brawl Stars сегодн�
 def cta_spec():
     speech = random.Random(today() + "cta").choice(CTA_SPEECHES)  # фразы чередуются по дням: ролики не слипаются в один
     return {"layer": L_cta(CTA_HANDLE, QR_URL), "speech": speech, "caption": "Сканируй QR и подписывайся!",
-            "priority": 10, "min": CTA_MIN_SEC, "sfx": "ding", "accent": YELLOW}
+            "priority": 10, "min": CTA_MIN_SEC, "sfx": "ding", "accent": YELLOW, "kind": "cta"}
 
 
 def script_meta(meta):
@@ -1384,17 +1611,17 @@ def script_meta(meta):
     por = _portraits([r[0] for r in top3] + [pop[0]])
     title, sub, say = random.Random(today() + "hook").choice(HOOKS)
     specs = [{"layer": L_title(title, sub), "speech": say, "caption": "Мета Brawl Stars сегодня", "priority": 9,
-              "accent": PURPLE}]
+              "accent": PURPLE, "kind": "title"}]
     for rank, accent in ((3, BLUE), (2, PINK), (1, ORANGE)):
         n, pk, w, wr, lb = top3[rank - 1]
         say = (f"И первое место: {n}!" if rank == 1 else f"{ORD[rank]} место: {n}.") + f" {bot.pct(wr)} побед."
         specs.append({"layer": L_hero(n, f"{bot.pct(wr)} побед", f"пикрейт {bot.pct(pk / total)}", por.get(n.upper()), rank),
                       "speech": say, "caption": f"{rank} место: {n}, {bot.pct(wr)} побед",
-                      "priority": 8 if rank == 1 else 6, "accent": accent, "sfx": "ding" if rank == 1 else "whoosh"})
+                      "priority": 8 if rank == 1 else 6, "accent": accent, "sfx": "ding" if rank == 1 else "whoosh", "kind": "hero"})
     if pop[0] not in [r[0] for r in top3]:
         specs.append({"layer": L_hero(pop[0], "самый популярный", f"{bot.pct(pop[3])} побед", por.get(pop[0].upper())),
                       "speech": f"Самый популярный: {pop[0]}. Его берут в {bot.pct(pop[1] / total)} боёв.",
-                      "caption": f"Самый популярный: {pop[0]}", "priority": 3, "accent": GREEN})
+                      "caption": f"Самый популярный: {pop[0]}", "priority": 3, "accent": GREEN, "kind": "hero"})
     specs.append(cta_spec())
     names = ", ".join(r[0] for r in top3)
     top1 = top3[0][0]
@@ -1408,7 +1635,7 @@ def script_guide(b, state):
     por = _portraits([info["name"]]).get(info["name"].upper())
     specs = [{"layer": L_hero(info["name"], info["cls_ru"] or "гайд", info["short_stat"], por),
               "speech": f"Гайд на бойца {info['name']}!" + (f" Это {info['cls_ru']}." if info["cls_ru"] else ""),
-              "caption": f"Гайд: {info['name']}", "priority": 10, "accent": PURPLE}]
+              "caption": f"Гайд: {info['name']}", "priority": 10, "accent": PURPLE, "kind": "hero"}]
     if info["desc"]:
         specs += text_specs("Кто это", info["desc"], BLUE, 4)
     for label, rows, accent, prio in (("Гаджет", info["gadgets"], ORANGE, 7), ("Звёздная сила", info["stars"], PINK, 7),
@@ -1434,7 +1661,7 @@ DEMO_LONG = ("Длинный текст теперь не обрезается �
 
 def script_demo():
     specs = [{"layer": L_title("Тест ролика", "проверка сборки"), "speech": "Привет! Это тест автоматической сборки роликов.",
-              "caption": "Тест автоматической сборки", "priority": 9, "accent": PURPLE}]
+              "caption": "Тест автоматической сборки", "priority": 9, "accent": PURPLE, "kind": "title"}]
     specs += text_specs("Всё работает", "Голос, ведущий, QR-код и переходы собраны автоматически.", ORANGE, 5)
     specs += text_specs("Длинный текст", DEMO_LONG, BLUE, 5)
     specs.append(cta_spec())
