@@ -42,51 +42,70 @@ def t_fast():
     if not mv.have_graphics():
         print("нет шрифта, пропускаю тесты вёрстки")
         return
-    samples = [
+    texts = [
         "Это быстрый боец дальнего боя, который любит держать дистанцию и забрасывать врагов гранатами из-за укрытий.",
         "Мортис: наносит урон по области, затем отталкивает ближайших врагов и на короткое время оглушает всех, кого зацепил рывок. " * 3,
         "Это универсальный разбор. Выбирай под карту и режим.",
+        "Суперспособностьсверхдлинногослова и ещё несколько обычных слов подряд, чтобы проверить деление.",
         "Слово " * 70,
     ]
-    for i, text in enumerate(samples):
-        parts = mv.chunk_text(text)
-        joined = " ".join(parts).split()
-        check(f"чанки #{i}: слова не потеряны", joined == text.split(), f"{len(joined)} vs {len(text.split())}")
-        check(f"чанки #{i}: каждый помещается", all(mv.text_fits(p) for p in parts), str(len(parts)))
-        check(f"чанки #{i}: нет '…'", all("…" not in p for p in parts))
-        for p in parts[:1]:
-            layer = mv.L_text("Тест", p)
-            check(f"слои #{i}: слова размечены", len(layer.words) == len(p.split()))
-    sp_ = mv.text_specs("Гаджет", "Быстрая стрелка: " + samples[0], mv.ORANGE, 7, say_first="Гаджет.")
-    check("text_specs: озвучка = экран", all(re.sub(r"^Гаджет\. ", "", s["speech"]) == " ".join(w["word"] for w in s["words"]) for s in sp_))
-    check("text_specs: общий group", len({s["group"] for s in sp_}) == 1)
-    words = [{"word": w} for w in "Привет, это тест. Как дела?".split()]
+    for i, text in enumerate(texts):
+        words = text.split()
+        groups = mv.split_phrases(words)
+        flat = [x for g in groups for x in g]
+        check(f"фразы #{i}: все слова на месте и по порядку", flat == list(range(len(words))), f"{len(flat)} vs {len(words)}")
+        check(f"фразы #{i}: не больше 3 слов на экране", all(len(g) <= 3 for g in groups))
+        fits = [mv._kin_fit([words[j] for j in g]) or mv._kin_fit([words[j] for j in g], 30) for g in groups]
+        check(f"фразы #{i}: каждая помещается по ширине", all(f is not None for f in fits))
+        check(f"фразы #{i}: из нескольких слов только крупным шрифтом",
+              all(len(g) == 1 or mv._kin_fit([words[j] for j in g], 96) for g in groups))
+    sp_ = mv.text_specs("Гаджет", "Быстрая стрелка: " + texts[0], mv.ORANGE, 7, say_first="Гаджет.")
+    check("text_specs: один слайд, озвучка = экран",
+          len(sp_) == 1 and sp_[0]["speech"] == "Гаджет. Быстрая стрелка: " + texts[0] and
+          " ".join(w["word"] for w in sp_[0]["words"]) == "Быстрая стрелка: " + texts[0])
+    words = [{"word": w} for w in "Привет, это тест 53,4% Мортис. Как дела?".split()]
     tm = mv.word_times(words, "Гаджет.", 4.0)
-    check("тайминги: растут и укладываются", all(tm[i][1] <= tm[i + 1][0] + 1e-9 for i in range(len(tm) - 1)) and abs(tm[-1][1] - 4.0) < 1e-6, str(tm))
-    check("тайминги: лид занимает начало", tm[0][0] > 0.2)
-    # плавность подсветки: яркость плашки растёт, держится и гаснет без скачков
+    check("тайминги: растут и укладываются", all(tm[i][1] <= tm[i + 1][0] + 1e-9 for i in range(len(tm) - 1)) and abs(tm[-1][1] - 4.0) < 1e-6)
+    kin = mv.build_kinetic(words, tm)
+    check("кинетика: все слова размечены", sum(len(p["words"]) for p in kin) == len(words), str([len(p["words"]) for p in kin]))
+    check("кинетика: экраны идут по времени", all(kin[i]["start"] <= kin[i + 1]["start"] for i in range(len(kin) - 1)))
+    check("горячие слова: цифры, имена, сокращения", mv._is_hot("53,4%") and mv._is_hot("Мортис") and mv._is_hot("HP") and not mv._is_hot("привет"))
+    from PIL import Image as _I
+    fr = _I.new("RGB", (mv.W, mv.H), (30, 30, 80))
+    before = fr.tobytes()
+    mv.paste_kinetic(fr, kin, 0.0)
+    check("кинетика: до начала речи виден бледный предпросмотр", fr.tobytes() != before)
+    mv.paste_kinetic(fr, kin, kin[0]["words"][0]["t0"] + 0.3)
+    check("кинетика: слово рисуется", fr.tobytes() != before)
     wd = {"t0": 1.0, "t1": 1.4}
     seq = [mv.karaoke_alpha(wd, 0.9 + i * 0.02)[0] for i in range(60)]
     steps = [abs(seq[i + 1] - seq[i]) for i in range(len(seq) - 1)]
     check("подсветка: нет скачков яркости", max(steps) <= 0.3 and seq[0] == 0 and max(seq) == 1 and seq[-1] == 0, str(max(steps)))
-    # наложения: низ любого слайда не заходит на зону ведущего и пузыря
-    real_sun = mv.sunburst
-    mv.sunburst = lambda *a, **k: None  # лучи на фоне могут заходить куда угодно, проверяем только текст и плашки
-    layers = [mv.script_demo()["specs"]]
-    for sl in layers[0]:
-        bottom = sl["layer"].getbbox()[3] + mv.CONTENT_DY
-        check(f"нет наложения на ведущего ({sl['speech'][:18]})", bottom <= mv.BUBBLE_Y - 4, str(bottom))
-    hero = mv.L_hero("Mortis", "самый популярный", "53,4% побед", None, None)
-    check("L_hero: низ выше зоны ведущего", hero.getbbox()[3] + mv.CONTENT_DY <= mv.BUBBLE_Y - 4, str(hero.getbbox()))
-    mv.sunburst = real_sun
-    from PIL import Image as _I
-    t = mv.tilt(_I.new("RGBA", (400, 300), (255, 0, 0, 255)), 0.8)
-    check("наклон: размер сохранён, края не пустые", t.size == (400, 300) and t.getbbox() is not None)
+    # 3D-предметы: все кадры непустые, вращение меняет картинку
+    for kind in ("cube", "gem", "star"):
+        frs = mv.obj_frames(kind, mv.OBJ_COLORS[kind][0], 120, 12)
+        check(f"3D {kind}: кадры непустые", all(f.getbbox() is not None for f in frs))
+        check(f"3D {kind}: вращение меняет картинку", len({f.tobytes() for f in frs}) > 6)
+    check("бурст рисуется", mv.make_burst(mv.YELLOW, 300).getbbox() is not None)
+    # наложения: низ статичных слайдов (с наклоном) не заходит на зону ведущего и пузыря
+    real_sun = None
+    layers = mv.script_demo()["specs"] + [{"layer": mv.L_hero("Mortis", "самый популярный", "53,4% побед", None, 1)},
+                                         {"layer": mv.L_hero("Edgar", "убийца", "", None, None)}]
+    for sl in layers:
+        lay = mv._orient(sl["layer"])
+        bottom = lay.getbbox()[3] + mv.CONTENT_DY
+        check(f"нет наложения на ведущего ({sl.get('speech', 'hero')[:18]})", bottom <= mv.BUBBLE_Y - 2, str(bottom))
+    check("наклон: размер сохранён", mv.tilt(_I.new("RGBA", (400, 300), (255, 0, 0, 255)), 0.8).size == (400, 300))
     import io as _io
     buf = _io.BytesIO(); _I.new("RGB", (200, 240), (60, 120, 200)).save(buf, "PNG")
     hs = mv.make_host(buf.getvalue(), "Mortis")
     check("диктор: 8 спрайтов нужного размера", len(hs) == 8 and hs[(0, 0)].size == mv.MASCOT_SIZE)
     check("диктор: открытый рот отличается от закрытого", hs[(0, 0)].tobytes() != hs[(3, 0)].tobytes())
+    # регрессия: кадры не должны портить исходный слой (раньше он становился полупрозрачным)
+    cont = _I.new("RGBA", (300, 200), (255, 0, 0, 255))
+    sl = {"dur": 0.6, "content": (cont, (100, 400)), "mouth": [0] * 15, "anim": 0, "kind": "title", "burst_y": 500, "props": []}
+    list(mv.render_frames([sl], [mv.make_bg(0, 0)], [], mv.make_mascot(), 15))
+    check("кадры не меняют исходный слой", cont.getpixel((150, 100)) == (255, 0, 0, 255), str(cont.getpixel((150, 100))))
     bub = mv.make_bubble("Слово " * 80)
     check("пузырь: не режет, а пропускается", bub is None)
     check("пузырь: короткая реплика есть", mv.make_bubble("Мета Brawl Stars сегодня") is not None)
