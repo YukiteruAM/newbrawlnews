@@ -124,6 +124,9 @@ def t_fast():
     check("пузырь: не режет, а пропускается", bub is None)
     check("пузырь: короткая реплика есть", mv.make_bubble("Мета Brawl Stars сегодня") is not None)
 
+    check("битрейт: короткий ролик получает больше, длинный меньше", mv.video_maxrate(30) > mv.video_maxrate(58) >= 2_500_000)
+    check("битрейт: 58 с укладываются в лимит Telegram", mv.video_maxrate(58) * 58 / 8 + 160_000 * 58 / 8 <= mv.TG_LIMIT, str(mv.video_maxrate(58)))
+    check("битрейт: потолок 16 Мбит/с", mv.video_maxrate(10) == 16_000_000)
     # ---- живой голос
     toks = "Гаджет. Быстрая стрелка: бьёт далеко, но медленно. Это важно! Правда? Да, правда, и вот почему так.".split(" ")
     segs = mv.split_segments(toks, 1)
@@ -207,6 +210,12 @@ def t_render(kind="demo", with_music=False):
                         capture_output=True, text=True).stdout
     check(f"{kind}{'+music' if with_music else ''}: есть видео 1080x1920 и звук", "video,1080,1920" in pr.replace("\n", "") and "audio" in pr, pr)
     check(f"{kind}: длина {res['duration']:.1f} с в пределах лимита", res["duration"] <= mv.MAX_VIDEO_SEC + 1)
+    info = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                           "stream=r_frame_rate,color_space,color_primaries,profile,width,height", "-of", "default=nw=1", out],
+                          capture_output=True, text=True).stdout
+    check(f"{kind}: {mv.FPS} кадров/с", f"r_frame_rate={mv.FPS}/1" in info, info)
+    check(f"{kind}: цвет размечен как BT.709", "color_space=bt709" in info and "color_primaries=bt709" in info, info)
+    check(f"{kind}: размер файла в лимите Telegram", os.path.getsize(out) <= mv.TG_LIMIT, str(os.path.getsize(out)))
     ld = subprocess.run(["ffmpeg", "-hide_banner", "-i", out, "-af", "ebur128", "-f", "null", "-"], capture_output=True, text=True).stderr
     m = re.findall(r"I:\s+(-?[\d.]+) LUFS", ld)
     check(f"{kind}: громкость около -14 LUFS", bool(m) and -17 < float(m[-1]) < -11, str(m[-1:]))
