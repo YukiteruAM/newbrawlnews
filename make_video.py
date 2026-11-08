@@ -32,6 +32,7 @@ TTS_VOICE = os.environ.get("TTS_VOICE") or "ru-RU-DmitryNeural"
 TTS_RATE = os.environ.get("TTS_RATE") or "+12%"      # чуть бодрее обычного, но имена и цифры ещё разборчивы
 TTS_PITCH = os.environ.get("TTS_PITCH") or "+0Hz"
 TTS_STRESS = os.environ.get("TTS_STRESS", "")        # "acute": ставить знак ударения (проверяется командой voicetest)
+TTS_STYLE = os.environ.get("TTS_STYLE") or "lively"   # "lively": интонация по смыслу фраз; "plain": как раньше
 GTTS_TEMPO = 1.25                # запасной голос Google ускоряем сами
 VIDEO_CHAT_ID = os.environ.get("VIDEO_CHAT_ID", "")  # личный чат, куда бот пришлёт готовые ролики
 CTA_HANDLE = os.environ.get("VIDEO_CTA_HANDLE") or (bot.CHAT if bot.CHAT.startswith("@") else "")
@@ -397,7 +398,7 @@ def spoken(text):
 _ENGINE = {}
 
 
-def tts(text, out_path):
+def tts(text, out_path, rate=None, pitch=None, volume=None):
     """Озвучка: сначала бесплатный голос Microsoft Edge (edge-tts), затем запасной Google (gTTS).
     Возвращает путь к файлу или None (тогда ролик собирается без голоса, только с текстом)."""
     last = None
@@ -405,10 +406,13 @@ def tts(text, out_path):
         import edge_tts
 
         async def run_edge():
+            kw = {"rate": rate or TTS_RATE, "pitch": pitch or TTS_PITCH}
+            if volume:
+                kw["volume"] = volume
             try:
-                comm = edge_tts.Communicate(text, TTS_VOICE, rate=TTS_RATE, pitch=TTS_PITCH)
-            except TypeError:  # старая версия edge-tts без pitch
-                comm = edge_tts.Communicate(text, TTS_VOICE, rate=TTS_RATE)
+                comm = edge_tts.Communicate(text, TTS_VOICE, **kw)
+            except TypeError:  # старая версия edge-tts без pitch или volume
+                comm = edge_tts.Communicate(text, TTS_VOICE, rate=kw["rate"])
             await comm.save(out_path)
 
         for attempt in range(3):
@@ -433,6 +437,127 @@ def tts(text, out_path):
     except Exception as ex:
         print("запасная озвучка тоже не получилась:", ex)
     return None
+
+
+# ---- «живой» голос: каждая фраза озвучивается со своей интонацией (радость, вопрос, спад к концу),
+# между фразами ставятся паузы, а точные границы фраз дают точную подсветку слов
+def _num(text, default=0):
+    m = re.search(r"[+-]?\d+", text or "")
+    return int(m.group(0)) if m else default
+
+
+def split_segments(tokens, lead_n=0):
+    """Делит слова озвучки на сегменты (предложения, а длинные ещё по запятым). Заголовок-«лид» всегда отдельно.
+    Возвращает списки индексов слов; ничего не теряется."""
+    segs, cur = [], []
+    for i, tk in enumerate(tokens):
+        cur.append(i)
+        end = tk.rstrip("»\"')").endswith((".", "!", "?", "…"))
+        soft = tk.endswith((",", ";", ":", "—")) and len(cur) >= 5
+        if i + 1 == lead_n or end or soft or len(cur) >= 14:
+            segs.append(cur)
+            cur = []
+    if cur:
+        segs.append(cur)
+    if len(segs) > 1 and len(segs[-1]) < 2 and segs[-2][-1] >= lead_n:
+        segs[-2:] = [segs[-2] + segs[-1]]
+    return segs
+
+
+def prosody(text, first=False, kind=""):
+    """Сдвиги скорости (%), высоты (Гц) и громкости (%) относительно базовых: по знаку в конце фразы и роли слайда."""
+    t = text.strip()
+    last = t.rstrip("»\"')")[-1:]
+    rate = pitch = vol = 0
+    if last == "!":
+        rate, pitch, vol = 6, 5, 8
+    elif last == "?":
+        rate, pitch = 2, 6
+    elif last in ",;:—":
+        pitch = 2
+    else:
+        rate, pitch = -2, -2  # спад к концу мысли: звучит уверенно и закончено
+    if first:  # первая фраза ролика, «крючок»: бодрее и громче
+        rate, pitch, vol = rate + 8, pitch + 3, vol + 10
+    if kind == "cta":
+        rate, pitch, vol = rate + 4, pitch + 3, vol + 4
+    if re.search(r"\d|%", t):  # цифры чуть медленнее и громче, чтобы их было слышно
+        rate, vol = rate - 4, vol + 5
+    return rate, pitch, vol
+
+
+def _prosody_args(rate, pitch, vol):
+    r = max(-15, min(30, _num(TTS_RATE, 0) + rate))
+    p = max(-8, min(10, _num(TTS_PITCH, 0) + pitch))
+    v = max(-10, min(20, vol))
+    return f"{r:+d}%", f"{p:+d}Hz", f"{v:+d}%"
+
+
+def _pause_after(text):
+    last = text.strip().rstrip("»\"')")[-1:]
+    return {"!": 0.22, "?": 0.22, ".": 0.20, "…": 0.25, ",": 0.07, ":": 0.12, ";": 0.10, "—": 0.10}.get(last, 0.08)
+
+
+def speak(sp, i, workdir, first=False):
+    """Озвучка слайда. Возвращает (wav, сегменты) где сегменты: [{'start','dur','a','b'}] (b не включительно, индексы слов),
+    либо (wav, None) в простом режиме, либо (None, None) без голоса."""
+    speech = (sp.get("speech") or "").strip()
+    if not speech:
+        return None, None
+
+    def plain():
+        raw = tts(spoken(speech), os.path.join(workdir, f"v{i}.mp3"))
+        return (clean_voice(raw, os.path.join(workdir, f"c{i}.wav")), None) if raw else (None, None)
+    tokens = speech.split(" ")
+    if TTS_STYLE != "lively" or len(tokens) < 2:
+        return plain()
+    lead_n = len((sp.get("lead") or "").split())
+    groups = split_segments(tokens, lead_n)
+    parts, info, t = [], [], 0.0
+    for gi, g in enumerate(groups):
+        text = " ".join(tokens[j] for j in g)
+        r, pt, v = _prosody_args(*prosody(text, first and gi == 0, sp.get("kind", "")))
+        raw = tts(spoken(text), os.path.join(workdir, f"v{i}_{gi}.mp3"), r, pt, v)
+        if not raw:
+            return plain()
+        wav = clean_voice(raw, os.path.join(workdir, f"c{i}_{gi}.wav"))
+        d = audio_duration(wav)
+        info.append({"start": t, "dur": d, "a": g[0], "b": g[-1] + 1})
+        parts.append(wav)
+        t += d
+        if gi + 1 < len(groups):
+            gap = 0.16 if gi == 0 and lead_n and g[-1] + 1 == lead_n else _pause_after(text)
+            gp = os.path.join(workdir, f"g{i}_{gi}.wav")
+            run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo", "-t", f"{gap:.3f}",
+                 "-c:a", "pcm_s16le", gp])
+            parts.append(gp)
+            t += gap
+    return _concat_wavs(parts, workdir, f"vo{i}"), info
+
+
+def _word_weight(w):
+    extra = 3.0 if w.endswith((",", ";", ":")) else 6.0 if w.endswith((".", "!", "?", "…")) else 0.0
+    return max(1.0, len(spoken(w))) + extra
+
+
+def word_times_seg(words, info, lead_n):
+    """Время звучания каждого слова: внутри каждого сегмента пропорционально длине слова, границы сегментов точные."""
+    out = [None] * len(words)
+    for seg in info:
+        idxs = [tok - lead_n for tok in range(seg["a"], seg["b"]) if lead_n <= tok < lead_n + len(words)]
+        if not idxs:
+            continue
+        ws = [_word_weight(words[j]["word"]) for j in idxs]
+        total, t = sum(ws), seg["start"]
+        for j, wt in zip(idxs, ws):
+            out[j] = (t, t + seg["dur"] * wt / total)
+            t += seg["dur"] * wt / total
+    last = 0.0
+    for j, v in enumerate(out):  # слова вне сегментов (не должно быть) получают пустое окно рядом с соседями
+        if v is None:
+            out[j] = (last, last + 0.05)
+        last = out[j][1]
+    return out
 
 
 def run(cmd, **kw):
@@ -1330,8 +1455,17 @@ def render_frames(slides, bgs, particles, sprites, total):
                 x = cx + (content.width - lay.width) // 2
                 y = cy + (content.height - lay.height) // 2 + int(8 * math.sin(gt * 2.4))
             frame.paste(lay, (x, y), lay)
+            tt = (k + 0.5) / FPS
+            for te, ex, ey in sl.get("emph", []):  # ударная волна вокруг важного слова
+                pr_ = (tt - te) / 0.5
+                if 0 <= pr_ < 1:
+                    ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+                    rad = 70 + 430 * pr_
+                    ImageDraw.Draw(ov).ellipse((ex - rad, ey - rad, ex + rad, ey + rad), outline=YELLOW + (int(235 * (1 - pr_)),),
+                                               width=max(3, int(16 * (1 - pr_))))
+                    frame.paste(ov, (0, 0), ov)
             if kin:
-                paste_kinetic(frame, kin, (k + 0.5) / FPS)
+                paste_kinetic(frame, kin, tt)
             # ведущий
             mouth = sl["mouth"][k] if k < len(sl["mouth"]) else 0
             if bubble is None:  # без пузыря диктор крупнее: на текстовых слайдах он главный собеседник
@@ -1343,6 +1477,12 @@ def render_frames(slides, bgs, particles, sprites, total):
             if bubble is not None:
                 bb = _scaled(bubble, 0.7 + 0.3 * pe) if k < POP_FRAMES else bubble
                 frame.paste(bb, (400, BUBBLE_Y + (bubble.height - bb.height) // 2), bb)
+            for te, _ex, _ey in sl.get("emph", []):  # короткий наезд камеры на важное слово
+                q = tt - te
+                if 0 <= q < 0.18:
+                    z = 1 + 0.045 * (1 - q / 0.18)
+                    w2, h2 = int(W / z), int(H / z)
+                    frame = frame.crop(((W - w2) // 2, (H - h2) // 2, (W - w2) // 2 + w2, (H - h2) // 2 + h2)).resize((W, H), Image.BILINEAR)
             if si > 0 and k < 6:  # наезд камеры при смене слайда
                 z = 1 + 0.07 * (1 - k / 6)
                 w2, h2 = int(W / z), int(H / z)
@@ -1408,6 +1548,8 @@ SFX_MAKERS = {
             "afade=t=in:d=0.005,afade=t=out:st=0.03:d=0.13,volume=0.9"),
     "ding": (["-f", "lavfi", "-i", "sine=frequency=1175:duration=0.55:sample_rate=44100"],
              "afade=t=in:d=0.005,afade=t=out:st=0.05:d=0.5,volume=0.7"),
+    "hit": (["-f", "lavfi", "-i", "sine=frequency=95:duration=0.32:sample_rate=44100"],
+            "afade=t=in:d=0.003,afade=t=out:st=0.03:d=0.29,volume=1.6"),
 }
 
 
@@ -1428,8 +1570,16 @@ def build_audio_tracks(slides, workdir):
             run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
                  "-t", f"{sl['dur']:.3f}", v])
         s_ = os.path.join(workdir, f"sseg{i}.wav")
-        run(["ffmpeg", "-y", "-loglevel", "error", "-i", kinds.get(sl.get("sfx"), kinds["whoosh"]), "-af", "apad",
-             "-t", f"{sl['dur']:.3f}", "-ar", "44100", "-ac", "2", s_])
+        hits = [te for te, _x, _y in sl.get("emph", []) if te < sl["dur"] - 0.1]
+        if hits:  # звук перехода и «удары» на важных словах
+            ins = ["-i", kinds.get(sl.get("sfx"), kinds["whoosh"])] + sum([["-i", kinds["hit"]] for _ in hits], [])
+            flt = "[0:a]apad[a0];" + "".join(f"[{j + 1}:a]adelay={int(te * 1000)}|{int(te * 1000)}[h{j}];" for j, te in enumerate(hits))
+            flt += "[a0]" + "".join(f"[h{j}]" for j in range(len(hits))) + f"amix=inputs={len(hits) + 1}:duration=first:normalize=0[o]"
+            run(["ffmpeg", "-y", "-loglevel", "error"] + ins + ["-filter_complex", flt, "-map", "[o]", "-t", f"{sl['dur']:.3f}",
+                                                                  "-ar", "44100", "-ac", "2", s_])
+        else:
+            run(["ffmpeg", "-y", "-loglevel", "error", "-i", kinds.get(sl.get("sfx"), kinds["whoosh"]), "-af", "apad",
+                 "-t", f"{sl['dur']:.3f}", "-ar", "44100", "-ac", "2", s_])
         voice_parts.append(v)
         sfx_parts.append(s_)
     return _concat_wavs(voice_parts, workdir, "voice"), _concat_wavs(sfx_parts, workdir, "sfx")
@@ -1552,9 +1702,23 @@ def _kin_sprite(word, f, hot, cur, angle):
         top, bottom = ((255, 255, 255), (110, 235, 255)) if cur else ((190, 255, 235), (60, 225, 150))
     else:
         top, bottom = ((255, 252, 200), (255, 196, 0)) if cur else ((255, 255, 255), (212, 205, 255))
+    if hot:  # «маркер» под важным словом (цифра, имя, сокращение)
+        bh, by = max(12, int(f.size * 0.17)), h // 2 + int(f.size * 0.43)
+        bot.ImageDraw.Draw(lay).rounded_rectangle((pad - 8, by, w - pad + 8, by + bh), radius=bh // 2, fill=(255, 70, 150, 240),
+                                                  outline=DARK + (255,), width=3)
     grad_text(lay, (w // 2, h // 2), word, f, top=top, bottom=bottom, stroke=max(6, int(f.size * 0.085)), outline=DARK,
               depth=max(8, int(f.size * 0.12)))
     return lay.rotate(angle, resample=bot.Image.BICUBIC) if angle else lay
+
+
+def emphasis_events(kin, maxn=4, gap=0.9):
+    """Моменты, когда звучит важное слово: [(время, x, y)]. Не чаще раза в gap секунд и не больше maxn на слайд."""
+    out = []
+    for ph in kin:
+        for w in ph["words"]:
+            if w.get("hot") and (not out or w["t0"] - out[-1][0] >= gap) and len(out) < maxn:
+                out.append((w["t0"], w["cx"], w["cy"]))
+    return out
 
 
 def build_kinetic(words, times):
@@ -1578,7 +1742,7 @@ def build_kinetic(words, times):
                 idx += 1
                 hot, ang = _is_hot(w), (-3, 2, -2, 3, 0)[gi % 5]
                 items.append({"n": _kin_sprite(w, f, hot, False, ang), "c": _kin_sprite(w, f, hot, True, ang),
-                              "cx": wx, "cy": yc, "t0": times[gi][0], "t1": times[gi][1]})
+                              "cx": wx, "cy": yc, "t0": times[gi][0], "t1": times[gi][1], "hot": hot})
         phrases.append({"start": times[g[0]][0], "words": items})
     return phrases
 
@@ -1603,6 +1767,8 @@ def paste_kinetic(frame, kin, tt):
         al, _ = karaoke_alpha(w, tt)
         spr = w["n"] if al <= 0.01 else (w["c"] if al >= 0.99 else bot.Image.blend(w["n"], w["c"], al))
         sc = (0.45 + 0.55 * _ease_out_back(min(1.0, age / 0.18))) * (1 + 0.05 * al)
+        if w.get("hot"):  # важное слово «бьёт» сильнее: крупный отскок
+            sc *= 1 + 0.28 * max(0.0, 1 - age / 0.32)
         spr = _scaled(spr, sc)
         frame.paste(spr, (int(w["cx"] - spr.width / 2), int(w["cy"] - spr.height / 2)), spr)
 
@@ -1620,11 +1786,7 @@ def render_video(specs, out_path, vstate=None, seed=0, host=None):
     try:
         slides, voiced = [], 0
         for i, sp in enumerate(specs):
-            wav = None
-            if sp.get("speech"):
-                raw = tts(spoken(sp["speech"]), os.path.join(workdir, f"v{i}.mp3"))
-                if raw:
-                    wav = clean_voice(raw, os.path.join(workdir, f"c{i}.wav"))
+            wav, segs = speak(sp, i, workdir, first=(i == 0))
             if wav:
                 voiced += 1
                 dur = max(MIN_SLIDE_SEC, audio_duration(wav) + PAD_SEC, sp.get("min", 0))
@@ -1633,7 +1795,8 @@ def render_video(specs, out_path, vstate=None, seed=0, host=None):
             slides.append({"layer": sp["layer"], "caption": sp.get("caption", ""), "voice_wav": wav, "dur": dur,
                            "voice_dur": audio_duration(wav) if wav else 0.0, "priority": sp.get("priority", 5),
                            "group": sp.get("group") or f"s{i}", "words": sp.get("words"), "lead": sp.get("lead", ""),
-                           "accent": sp.get("accent"), "sfx": sp.get("sfx", "whoosh"), "kind": sp.get("kind", "")})
+                           "accent": sp.get("accent"), "sfx": sp.get("sfx", "whoosh"), "kind": sp.get("kind", ""),
+                           "segs": segs})
         while sum(s["dur"] for s in slides) > MAX_VIDEO_SEC and len(slides) > 2:
             groups = {}
             for sl in slides[1:-1]:
@@ -1651,7 +1814,11 @@ def render_video(specs, out_path, vstate=None, seed=0, host=None):
             sl["anim"] = idx
             if sl.get("words"):
                 span = sl["voice_dur"] if sl.get("voice_wav") else max(0.5, sl["dur"] - 0.3)
-                sl["kin"] = build_kinetic(sl["words"], word_times(sl["words"], sl.get("lead", ""), span))
+                lead_n = len(sl.get("lead", "").split())
+                times = (word_times_seg(sl["words"], sl["segs"], lead_n) if sl.get("segs")
+                         else word_times(sl["words"], sl.get("lead", ""), span))
+                sl["kin"] = build_kinetic(sl["words"], times)
+                sl["emph"] = emphasis_events(sl["kin"])
             sl["burst_y"] = BURST_Y.get(sl["kind"], 560)
             sl["props"] = PROPS.get(sl["kind"], [])
             sl["content"] = _crop_layer(_orient(sl["layer"]))
@@ -1897,7 +2064,7 @@ def voice_test():
     """python make_video.py voicetest: шлёт в личку одну фразу тремя вариантами, чтобы на слух выбрать лучший.
     Как озвучка читает ударения, проверить без прослушивания нельзя, поэтому выбор за тобой."""
     sample = ("Мета Бравл Старс сегодня! Мортис, Эдгар и Кроу. Гаджет и звёздная сила дают 53,4% побед. "
-              "Пикрейт Леона: 12%. Сканируй код и подписывайся!")
+              "Пикрейт Леона: 12%. Угадаешь, кто первый? Сканируй код и подписывайся!")
     os.makedirs(OUT_DIR, exist_ok=True)
     for tag, stress, rate in (("A: обычная", "", TTS_RATE), ("B: со знаками ударения", "acute", TTS_RATE),
                               ("C: помедленнее", "", "+0%")):
@@ -1915,6 +2082,14 @@ def voice_test():
             except Exception as ex:
                 print("не отправилось:", ex)
     globals()["TTS_STRESS"] = ""
+    try:  # D: живая интонация, как в роликах (по умолчанию включена, TTS_STYLE=plain выключает)
+        wav, _ = speak({"speech": sample, "kind": ""}, 0, OUT_DIR, first=True)
+        if wav:
+            mp3 = os.path.join(OUT_DIR, "voice_D.mp3")
+            run(["ffmpeg", "-y", "-loglevel", "error", "-i", wav, "-c:a", "libmp3lame", mp3])
+            tg_send_audio(mp3, "Вариант D: живая интонация (как в роликах)")
+    except Exception as ex:
+        print("вариант D не получился:", ex)
 
 
 def deliver(result, caption):
