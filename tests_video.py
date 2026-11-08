@@ -64,6 +64,29 @@ def t_fast():
     tm = mv.word_times(words, "Гаджет.", 4.0)
     check("тайминги: растут и укладываются", all(tm[i][1] <= tm[i + 1][0] + 1e-9 for i in range(len(tm) - 1)) and abs(tm[-1][1] - 4.0) < 1e-6, str(tm))
     check("тайминги: лид занимает начало", tm[0][0] > 0.2)
+    # плавность подсветки: яркость плашки растёт, держится и гаснет без скачков
+    wd = {"t0": 1.0, "t1": 1.4}
+    seq = [mv.karaoke_alpha(wd, 0.9 + i * 0.02)[0] for i in range(60)]
+    steps = [abs(seq[i + 1] - seq[i]) for i in range(len(seq) - 1)]
+    check("подсветка: нет скачков яркости", max(steps) <= 0.3 and seq[0] == 0 and max(seq) == 1 and seq[-1] == 0, str(max(steps)))
+    # наложения: низ любого слайда не заходит на зону ведущего и пузыря
+    real_sun = mv.sunburst
+    mv.sunburst = lambda *a, **k: None  # лучи на фоне могут заходить куда угодно, проверяем только текст и плашки
+    layers = [mv.script_demo()["specs"]]
+    for sl in layers[0]:
+        bottom = sl["layer"].getbbox()[3] + mv.CONTENT_DY
+        check(f"нет наложения на ведущего ({sl['speech'][:18]})", bottom <= mv.BUBBLE_Y - 4, str(bottom))
+    hero = mv.L_hero("Mortis", "самый популярный", "53,4% побед", None, None)
+    check("L_hero: низ выше зоны ведущего", hero.getbbox()[3] + mv.CONTENT_DY <= mv.BUBBLE_Y - 4, str(hero.getbbox()))
+    mv.sunburst = real_sun
+    from PIL import Image as _I
+    t = mv.tilt(_I.new("RGBA", (400, 300), (255, 0, 0, 255)), 0.8)
+    check("наклон: размер сохранён, края не пустые", t.size == (400, 300) and t.getbbox() is not None)
+    import io as _io
+    buf = _io.BytesIO(); _I.new("RGB", (200, 240), (60, 120, 200)).save(buf, "PNG")
+    hs = mv.make_host(buf.getvalue(), "Mortis")
+    check("диктор: 8 спрайтов нужного размера", len(hs) == 8 and hs[(0, 0)].size == mv.MASCOT_SIZE)
+    check("диктор: открытый рот отличается от закрытого", hs[(0, 0)].tobytes() != hs[(3, 0)].tobytes())
     bub = mv.make_bubble("Слово " * 80)
     check("пузырь: не режет, а пропускается", bub is None)
     check("пузырь: короткая реплика есть", mv.make_bubble("Мета Brawl Stars сегодня") is not None)
@@ -95,7 +118,15 @@ def t_render(kind="demo", with_music=False):
     texts = [s["speech"] for s in script["specs"]]
     out = os.path.join(work, "t.mp4")
     t0 = time.time()
-    res = mv.render_video(script["specs"], out, {}, seed=1)
+    host = None
+    if os.environ.get("HOSTTEST"):
+        from PIL import Image as _I, ImageDraw as _D
+        import io as _io
+        im = _I.new("RGBA", (300, 340), (0, 0, 0, 0)); d = _D.Draw(im)
+        d.ellipse((30, 20, 270, 330), fill=(250, 190, 40, 255), outline=(30, 10, 50, 255), width=8)
+        d.ellipse((90, 120, 130, 170), fill=(255, 255, 255, 255)); d.ellipse((170, 120, 210, 170), fill=(255, 255, 255, 255))
+        buf = _io.BytesIO(); im.save(buf, "PNG"); host = (buf.getvalue(), "Mortis")
+    res = mv.render_video(script["specs"], out, {}, seed=1, host=host)
     el = time.time() - t0
     pr = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=codec_type,width,height,duration", "-of", "csv=p=0", out],
                         capture_output=True, text=True).stdout
