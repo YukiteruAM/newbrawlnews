@@ -13,8 +13,12 @@ def check(name, cond, info=""):
         FAILS.append(name)
 
 
-def fake_tts(text, out_path):
+CALLS = []
+
+
+def fake_tts(text, out_path, rate=None, pitch=None, volume=None):
     """Подмена озвучки: тон с «слогами», длина пропорциональна тексту (как у настоящего голоса, ~15 символов в секунду)."""
+    CALLS.append((text, rate, pitch, volume))
     sec = max(0.8, len(text) / 15.0)
     subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i",
                     f"aevalsrc='0.4*sin(2*PI*180*t)*(0.5+0.5*sin(2*PI*4*t))':d={sec:.2f}:s=24000", "-c:a", "libmp3lame", out_path],
@@ -119,6 +123,48 @@ def t_fast():
     bub = mv.make_bubble("Слово " * 80)
     check("пузырь: не режет, а пропускается", bub is None)
     check("пузырь: короткая реплика есть", mv.make_bubble("Мета Brawl Stars сегодня") is not None)
+
+    # ---- живой голос
+    toks = "Гаджет. Быстрая стрелка: бьёт далеко, но медленно. Это важно! Правда? Да, правда, и вот почему так.".split(" ")
+    segs = mv.split_segments(toks, 1)
+    check("сегменты: все слова на месте", [i for g in segs for i in g] == list(range(len(toks))))
+    check("сегменты: лид отдельно", segs[0] == [0])
+    r1, p1, v1 = mv.prosody("Это важно!")
+    r2, p2, v2 = mv.prosody("Правда?")
+    r3, p3, v3 = mv.prosody("Так и есть.")
+    check("интонация: восклицание выше и громче, вопрос выше, точка ниже", p1 > p3 and p2 > p3 and v1 > v3 and r1 > r3, str((p1, p2, p3)))
+    check("интонация: первая фраза бодрее", mv.prosody("Привет!", first=True)[0] > mv.prosody("Привет!")[0])
+    check("интонация: цифры громче и медленнее", mv.prosody("53%")[2] > mv.prosody("так")[2] and mv.prosody("53%")[0] < mv.prosody("так")[0])
+    a, b, c = mv._prosody_args(6, 5, 8)
+    check("интонация: форматы параметров edge-tts", re.fullmatch(r"[+-]\d+%", a) and re.fullmatch(r"[+-]\d+Hz", b) and re.fullmatch(r"[+-]\d+%", c), str((a, b, c)))
+    mv.tts = fake_tts
+    CALLS.clear()
+    wd = tempfile.mkdtemp(prefix="sp_")
+    sp = {"speech": "Гаджет. Быстрая стрелка бьёт далеко! Правда? Да, и вот почему так.", "lead": "Гаджет.", "kind": ""}
+    wav, info = mv.speak(sp, 0, wd, first=True)
+    check("озвучка: несколько сегментов с разной интонацией", wav and info and len(info) >= 3 and len({(c[1], c[2], c[3]) for c in CALLS}) >= 3, str(CALLS))
+    check("озвучка: сегменты идут без наложений",
+          all(info[i]["start"] + info[i]["dur"] <= info[i + 1]["start"] + 1e-6 for i in range(len(info) - 1)))
+    check("озвучка: общая длина = последний сегмент", abs(mv.audio_duration(wav) - (info[-1]["start"] + info[-1]["dur"])) < 0.15, str(mv.audio_duration(wav)))
+    words = [{"word": w} for w in "Быстрая стрелка бьёт далеко! Правда? Да, и вот почему так.".split()]
+    tm = mv.word_times_seg(words, info, 1)
+    check("тайминги по сегментам: монотонны и по порядку", all(tm[i][0] <= tm[i][1] and tm[i][1] <= tm[i + 1][0] + 1e-6 for i in range(len(tm) - 1)), str(tm))
+    check("тайминги по сегментам: первое слово после лида", tm[0][0] >= info[0]["dur"] - 1e-6)
+    mv.TTS_STYLE = "plain"
+    CALLS.clear()
+    wav2, info2 = mv.speak(sp, 1, wd, first=False)
+    check("простой режим: один вызов без сегментов", wav2 and info2 is None and len(CALLS) == 1)
+    mv.TTS_STYLE = "lively"
+    shutil.rmtree(wd, ignore_errors=True)
+    # ---- выделение важного
+    wk = [{"word": w} for w in "У лучших игроков 53,4% побед у Мортис".split()]
+    kin2 = mv.build_kinetic(wk, [(i * 0.4, i * 0.4 + 0.35) for i in range(len(wk))])
+    ev = mv.emphasis_events(kin2)
+    check("важное: события на цифрах и именах", len(ev) >= 1 and all(e[0] >= 0 for e in ev) and len(ev) <= 4, str(ev))
+    check("важное: события не чаще раза в 0.9 с", all(ev[i + 1][0] - ev[i][0] >= 0.9 for i in range(len(ev) - 1)))
+    hot_items = [w for ph in kin2 for w in ph["words"] if w["hot"]]
+    plain_items = [w for ph in kin2 for w in ph["words"] if not w["hot"]]
+    check("важное: у горячих слов отдельный спрайт с маркером", hot_items and plain_items)
 
 
 def t_render(kind="demo", with_music=False):
