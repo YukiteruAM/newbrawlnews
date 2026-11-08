@@ -365,6 +365,10 @@ def spoken(text):
     for lat, cyr in TERMS:
         t = re.sub(r"(?<!\w)" + re.escape(lat) + r"(?!\w)", cyr, t, flags=0 if lat in _CASE_SENS else re.I)
 
+    t = re.sub(r"(?<=[A-Za-zА-Яа-я])['’]s\b", "", t)  # притяжательное 's: «Supercell's» -> «Суперселл»
+    # одиночная латинская буква (x, X, a...) называется буквой: «икс», а не «кс»; рядом с цифрой ставим пробелы (2x, x2)
+    t = re.sub(r"(?<![A-Za-z])[A-Za-z](?![A-Za-z])", lambda m: " " + _LETTER[m.group(0).upper()] + " ", t)
+
     def latin(m):
         w = m.group(0)
         if w.isupper() and 2 <= len(w) <= 4:
@@ -877,43 +881,162 @@ def _sticker(img, white=9, dark=6):
     return out
 
 
-def make_host(png, name=""):
-    """Диктор: портрет бойца-стикер с микрофоном и именной плашкой. Рот не двигается, поэтому «говорит» он масштабом,
-    свечением и звуковыми волнами в такт голосу. Спрайты по тем же ключам (рот, моргание), что и у робота."""
-    Image, ImageDraw, ImageFilter = bot.Image, bot.ImageDraw, bot.ImageFilter
-    im = _prep_portrait(Image.open(io.BytesIO(png)))
-    MW, MH = MASCOT_SIZE
-    k = min(280 / im.width, 350 / im.height)
-    pm = _sticker(im.resize((max(1, int(im.width * k)), max(1, int(im.height * k))), Image.LANCZOS))
-    label = (name or "").upper()[:14]
+HOST_SIZE, HOST_X = (380, 510), 10
 
-    def draw(mouth):
-        cv = Image.new("RGBA", (MW, MH), (0, 0, 0, 0))
-        gl = Image.new("RGBA", (MW, MH), (0, 0, 0, 0))
-        ImageDraw.Draw(gl).ellipse((20, 40, MW - 20, 400), fill=YELLOW + (50 + 40 * mouth,))
-        cv.alpha_composite(gl.filter(ImageFilter.GaussianBlur(26)))
-        sh = Image.new("RGBA", (MW, MH), (0, 0, 0, 0))
-        ImageDraw.Draw(sh).ellipse((40, MH - 92, MW - 40, MH - 52), fill=(0, 0, 0, 110))
-        cv.alpha_composite(sh.filter(ImageFilter.GaussianBlur(7)))
-        sc = 1 + 0.035 * mouth
-        p2 = pm.resize((int(pm.width * sc), int(pm.height * sc)), Image.BILINEAR)
-        cv.alpha_composite(p2, ((MW - p2.width) // 2, MH - 74 - p2.height))
-        d = ImageDraw.Draw(cv)
-        d.rounded_rectangle((258, 372, 280, 452), radius=9, fill=(70, 70, 90, 255), outline=DARK + (255,), width=4)  # микрофон
-        d.ellipse((246, 336, 292, 382), fill=(190, 195, 215, 255), outline=DARK + (255,), width=4)
-        d.line((250, 359, 288, 359), fill=(120, 125, 150, 255), width=3)
-        for r in (30, 46, 62)[:mouth]:  # звуковые волны
-            d.arc((269 - r, 359 - r, 269 + r, 359 + r), -42, 42, fill=YELLOW + (255,), width=7)
+
+def _over(canvas, img, x, y):
+    """alpha_composite, который не падает, если картинка выходит за края."""
+    x0, y0 = max(0, x), max(0, y)
+    x1, y1 = min(canvas.width, x + img.width), min(canvas.height, y + img.height)
+    if x1 > x0 and y1 > y0:
+        canvas.alpha_composite(img.crop((x0 - x, y0 - y, x1 - x, y1 - y)), (x0, y0))
+
+
+class Host3D:
+    """Диктор как объёмная коллекционная карточка: вращается в 3D с перспективой, переворачивается при смене слайда,
+    «кивает» и подпрыгивает, когда говорит, по ней пробегает блик, вокруг по орбите летают 3D-предметы,
+    внизу индикатор голоса. faces: {(рот 0..3, моргание 0..1): RGBA-картинка бойца или робота}."""
+    FW, FH, TH, D = 252, 328, 30, 900   # лицевая грань, толщина, расстояние до камеры
+    CX, CY, SS = 190, 240, 2            # центр карточки на холсте и суперсэмплинг (сглаживание краёв)
+
+    def __init__(self, faces, label="", accent=PURPLE):
+        Image, ImageDraw = bot.Image, bot.ImageDraw
+        S = self.SS
+        fw, fh = self.FW * S, self.FH * S
+        r = 30 * S
+        base = Image.new("RGBA", (fw, fh), (0, 0, 0, 0))
+        d = ImageDraw.Draw(base)
+        d.rounded_rectangle((0, 0, fw - 1, fh - 1), radius=r, fill=DARK + (255,))
+        d.rounded_rectangle((5 * S, 5 * S, fw - 1 - 5 * S, fh - 1 - 5 * S), radius=r - 5 * S, fill=(255, 214, 64, 255))  # золотая рамка
+        inner = _vgrad(fw, fh, _shade(accent, 1.3), _shade(accent, 0.5)).convert("RGBA")
+        dots = Image.new("RGBA", (fw, fh), (0, 0, 0, 0))
+        dd = ImageDraw.Draw(dots)
+        step = 20 * S
+        for row, gy in enumerate(range(0, fh, step)):
+            rad = (1 + 3.5 * gy / fh) * S
+            for gx in range(-(step // 2) if row % 2 else 0, fw, step):
+                dd.ellipse((gx - rad, gy - rad, gx + rad, gy + rad), fill=(255, 255, 255, 38))
+        inner = Image.alpha_composite(inner, dots)
+        mask = Image.new("L", (fw, fh), 0)
+        ImageDraw.Draw(mask).rounded_rectangle((13 * S, 13 * S, fw - 1 - 13 * S, fh - 1 - 13 * S), radius=r - 13 * S, fill=255)
+        base.paste(inner, (0, 0), mask)
+        d = ImageDraw.Draw(base)
         if label:
-            f = bot._fit(d, label, 290, 38, 22)
-            d.rounded_rectangle((20, MH - 58, MW - 20, MH - 8), radius=22, fill=PURPLE + (255,), outline=(255, 255, 255, 235), width=4)
-            d.text((MW // 2, MH - 33), label, font=f, fill=(255, 255, 255, 255), anchor="mm")
-        return cv
-    by_mouth = [draw(m) for m in range(4)]
-    return {(m, b): by_mouth[m] for m in range(4) for b in (0, 1)}
+            d.rounded_rectangle((22 * S, 278 * S, fw - 22 * S, 314 * S), radius=15 * S, fill=DARK + (255,), outline=YELLOW + (255,), width=3 * S)
+            f = bot._fit(d, label, fw - 70 * S, 26 * S, 12 * S)
+            d.text((fw // 2, 296 * S), label, font=f, fill=(255, 255, 255, 255), anchor="mm")
+        self.mask = base.getchannel("A")
+        win = (16 * S, 16 * S, fw - 16 * S, 272 * S)
+        ww, wh = win[2] - win[0], win[3] - win[1]
+        ref = faces[(0, 0)]
+        k0 = min(ww / ref.width, wh / ref.height)
+        self.tex = {}
+        for key, face in faces.items():
+            f2 = face.resize((max(1, int(face.width * k0)), max(1, int(face.height * k0))), Image.LANCZOS)
+            lay = Image.new("RGBA", (ww, wh), (0, 0, 0, 0))
+            _over(lay, f2, (ww - f2.width) // 2, wh - f2.height)
+            t = base.copy()
+            _over(t, lay, win[0], win[1])
+            self.tex[key] = t
+        band = Image.new("RGBA", (fw * 3, fh), (0, 0, 0, 0))  # блик: наклонная полоса
+        bd = ImageDraw.Draw(band)
+        for x0, wdt, al in ((fw, 46 * S, 70), (fw + 70 * S, 16 * S, 90)):
+            bd.polygon([(x0, 0), (x0 + wdt, 0), (x0 + wdt - 120 * S, fh), (x0 - 120 * S, fh)], fill=(255, 255, 255, al))
+        self.shine = band
+        self.orbit = [(obj_frames("cube", (70, 225, 95), 64, 30), 0.0), (obj_frames("star", YELLOW, 72, 30), 2.09),
+                      (obj_frames("gem", PINK, 66, 30), 4.19)]
+        self.accent = accent
+
+    def _proj(self, v, th, ph, cy):
+        x, y, z = v
+        c, sn = math.cos(th), math.sin(th)
+        x, z = x * c + z * sn, -x * sn + z * c
+        c, sn = math.cos(ph), math.sin(ph)
+        y, z = y * c - z * sn, y * sn + z * c
+        sc = self.D / (self.D - z)
+        return (self.CX + x * sc, cy - y * sc), z
+
+    def render(self, gt, mouth, k, si, scale=1.0):
+        from PIL import ImageChops
+        Image, ImageDraw = bot.Image, bot.ImageDraw
+        S = self.SS
+        cw, ch = HOST_SIZE[0] * S, HOST_SIZE[1] * S
+        blink = 1 if (gt % 3.3) < 0.15 else 0
+        tex = self.tex.get((mouth, blink)) or self.tex[(mouth, 0)]
+        spin = 0.0
+        if k < 9:  # на каждой смене слайда карточка эффектно переворачивается
+            spin = (1 - _ease_out_back(k / 9)) * 1.25 * (1 if si % 2 == 0 else -1)
+        talk = mouth / 3.0
+        th = 0.34 * math.sin(gt * 1.25) + 0.10 * talk * math.sin(gt * 8.0) + spin
+        ph = 0.07 * math.sin(gt * 0.9) + (0.09 * math.sin(gt * 7.0) if mouth else 0.0)
+        cy = self.CY - 8 * talk * abs(math.sin(gt * 9)) + 6 * math.sin(gt * 2.2)
+        off = int(((gt * 0.45) % 1.0) * self.FW * S * 2)
+        sh = self.shine.crop((off, 0, off + self.FW * S, self.FH * S))
+        sh.putalpha(ImageChops.multiply(sh.getchannel("A"), self.mask))
+        tx = tex.copy()
+        tx.alpha_composite(sh)
+        hw, hh, tz = self.FW / 2, self.FH / 2, self.TH / 2
+        corners = lambda z: [(-hw, hh, z), (hw, hh, z), (hw, -hh, z), (-hw, -hh, z)]
+        front = [self._proj(v, th, ph, cy)[0] for v in corners(tz)]
+        back = [self._proj(v, th, ph, cy)[0] for v in corners(-tz)]
+        canvas = Image.new("RGBA", (cw, ch), (0, 0, 0, 0))
+        d = ImageDraw.Draw(canvas)
+        sw = 1.0 - 0.12 * talk * abs(math.sin(gt * 9))  # тень сжимается, когда карточка подпрыгивает
+        d.ellipse(((self.CX - 105 * sw) * S, 470 * S, (self.CX + 105 * sw) * S, 498 * S), fill=(0, 0, 0, 95))
+
+        def orbiters(front_side):
+            for frs, ph0 in self.orbit:
+                a = gt * 1.15 + ph0
+                z = math.sin(a)
+                if (z >= 0) != front_side:
+                    continue
+                spr = frs[int(gt * 20 + ph0 * 5) % len(frs)]
+                f = S * (0.8 + 0.3 * z)
+                spr = spr.resize((max(1, int(spr.width * f)), max(1, int(spr.height * f))), Image.BILINEAR)
+                ox, oy = self.CX + 150 * math.cos(a), cy - 30 + 40 * math.sin(a)
+                _over(canvas, spr, int(ox * S - spr.width / 2), int(oy * S - spr.height / 2))
+        orbiters(False)
+        for (a, b), nrm in (((1, 2), (1, 0, 0)), ((3, 0), (-1, 0, 0)), ((0, 1), (0, 1, 0)), ((2, 3), (0, -1, 0))):
+            nx, ny, nz = _rotate3(nrm, ph, th)  # те же углы и порядок поворотов, что у _proj
+            if nz <= 0.02:
+                continue
+            kk = 0.55 + 0.6 * max(0.0, _v_dot((nx, ny, nz), _LIGHT))
+            poly = [(x * S, y * S) for x, y in (front[a], front[b], back[b], back[a])]
+            d.polygon(poly, fill=_shade((255, 196, 40), kk) + (255,))
+            d.line(poly + [poly[0]], fill=DARK + (255,), width=4 * S, joint="curve")
+        dst = [(x * S, y * S) for x, y in front]
+        src = [(0, 0), (tx.width, 0), (tx.width, tx.height), (0, tx.height)]
+        mode = getattr(Image, "Transform", Image).PERSPECTIVE
+        canvas.alpha_composite(tx.transform((cw, ch), mode, _coeffs(dst, src), Image.BILINEAR))
+        orbiters(True)
+        d = ImageDraw.Draw(canvas)
+        amp = 0.2 if mouth == 0 else 0.55 + 0.15 * mouth  # индикатор голоса: столбики прыгают в такт речи
+        for i in range(5):
+            hgt = (8 + amp * 50 * (0.5 + 0.5 * math.sin(gt * 13 + i * 1.7))) * S
+            bx = (self.CX + (i - 2) * 34) * S
+            d.rounded_rectangle((bx - 12 * S, 468 * S - hgt, bx + 12 * S, 468 * S), radius=8 * S, fill=YELLOW + (255,),
+                                outline=DARK + (255,), width=3 * S)
+        return canvas.resize((int(HOST_SIZE[0] * scale), int(HOST_SIZE[1] * scale)), Image.LANCZOS)
 
 
-def make_bubble(text, max_w=560):
+def make_host(png, name=""):
+    """Диктор-боец: портрет на объёмной карточке. «Говорит» масштабом портрета, кивками и индикатором голоса."""
+    Image = bot.Image
+    im = _prep_portrait(Image.open(io.BytesIO(png)))
+    faces = {}
+    for m in range(4):
+        sc = 1 + 0.045 * m
+        f = im.resize((max(1, int(im.width * sc)), max(1, int(im.height * sc))), Image.LANCZOS)
+        faces[(m, 0)] = faces[(m, 1)] = f
+    return Host3D(faces, (name or "").upper()[:14])
+
+
+def make_robot_host():
+    """Запасной диктор: робот на такой же объёмной карточке."""
+    return Host3D(make_mascot(), "NEW BRAWL")
+
+
+def make_bubble(text, max_w=500):
     """Облачко с репликой справа от ведущего (хвостик слева)."""
     Image, ImageDraw = bot.Image, bot.ImageDraw
     probe = ImageDraw.Draw(Image.new("RGBA", (10, 10)))
@@ -1210,18 +1333,16 @@ def render_frames(slides, bgs, particles, sprites, total):
             if kin:
                 paste_kinetic(frame, kin, (k + 0.5) / FPS)
             # ведущий
-            blink = 1 if (gt % 3.3) < 0.15 else 0
             mouth = sl["mouth"][k] if k < len(sl["mouth"]) else 0
-            spr = sprites[(mouth, blink)]
-            bob = int(9 * math.sin(gt * 5.2)) if mouth else int(6 * math.sin(gt * 2.4))
-            if k < POP_FRAMES:
-                sp2 = _scaled(spr, 0.85 + 0.15 * pe)
-                frame.paste(sp2, (30 + (spr.width - sp2.width) // 2, MASCOT_Y + (spr.height - sp2.height) + bob), sp2)
+            if bubble is None:  # без пузыря диктор крупнее: на текстовых слайдах он главный собеседник
+                hs = sprites.render(gt, mouth, k, si, 1.3)
+                frame.paste(hs, (0, 1495 - hs.height), hs)
             else:
-                frame.paste(spr, (30, MASCOT_Y + bob), spr)
+                hs = sprites.render(gt, mouth, k, si)
+                frame.paste(hs, (HOST_X, MASCOT_Y), hs)
             if bubble is not None:
                 bb = _scaled(bubble, 0.7 + 0.3 * pe) if k < POP_FRAMES else bubble
-                frame.paste(bb, (360, BUBBLE_Y + (bubble.height - bb.height) // 2), bb)
+                frame.paste(bb, (400, BUBBLE_Y + (bubble.height - bb.height) // 2), bb)
             if si > 0 and k < 6:  # наезд камеры при смене слайда
                 z = 1 + 0.07 * (1 - k / 6)
                 w2, h2 = int(W / z), int(H / z)
@@ -1545,7 +1666,7 @@ def render_video(specs, out_path, vstate=None, seed=0, host=None):
                 sprites = make_host(*host)
             except Exception as ex:
                 print("диктор-персонаж не получился, беру робота:", ex)
-        encode_video(render_frames(slides, [make_bg(seed, i) for i in range(3)], make_particles(seed), sprites or make_mascot(), total_frames), silent)
+        encode_video(render_frames(slides, [make_bg(seed, i) for i in range(3)], make_particles(seed), sprites or make_robot_host(), total_frames), silent)
         voice_track, sfx_track = build_audio_tracks(slides, workdir)
         music = pick_music(vstate)
         mux(silent, voice_track, sfx_track, music, total_sec, out_path)
