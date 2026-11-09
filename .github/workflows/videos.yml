@@ -1,13 +1,13 @@
 name: videos
 on:
   schedule:
-    - cron: "40 17 * * *"      # каждый день в 20:40 по Москве, после меты и гайда
+    - cron: "20 * * * *"       # раз в час: сначала дешёвая проверка «есть ли что собирать»; срочное (баланс, новый боец) не ждёт вечера
   workflow_dispatch:
     inputs:
       kind:
         description: "Что собрать"
         type: choice
-        options: [auto, meta, guide, demo, voicetest]
+        options: [auto, balance, newbrawler, meta, guide, week, quiz, demo, voicetest]
         default: auto
 permissions:
   contents: write
@@ -23,12 +23,17 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Check pending
+        id: check
+        run: python -u make_video.py check
       - name: Install deps
+        if: steps.check.outputs.pending == 'true' || github.event_name == 'workflow_dispatch'
         run: |
           pip install --quiet pillow edge-tts gTTS
           (which ffmpeg > /dev/null && which ffprobe > /dev/null) || sudo apt-get install -y --no-install-recommends ffmpeg
           (sudo apt-get install -y --no-install-recommends fonts-dejavu-core > /dev/null 2>&1) || true
       - name: Make videos
+        if: steps.check.outputs.pending == 'true' || github.event_name == 'workflow_dispatch'
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
@@ -46,6 +51,7 @@ jobs:
           VIDEO_CRF: ${{ vars.VIDEO_CRF }}
           VIDEO_PRESET: ${{ vars.VIDEO_PRESET }}
           SEND_ORIGINAL: ${{ vars.SEND_ORIGINAL }}
+          POST_VIDEO_TO_CHANNEL: ${{ vars.POST_VIDEO_TO_CHANNEL }}
           VIDEO_CTA_HANDLE: ${{ vars.VIDEO_CTA_HANDLE }}
         run: python -u make_video.py ${{ inputs.kind || 'auto' }}
       - name: Keep videos for 3 days
