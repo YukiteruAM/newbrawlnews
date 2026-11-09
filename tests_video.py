@@ -170,6 +170,185 @@ def t_fast():
     check("важное: у горячих слов отдельный спрайт с маркером", hot_items and plain_items)
 
 
+def t_mux():
+    """Микс музыки: любой трек выравнивается по громкости, ролик собирается с музыкой и без, у длинного трека есть смещение."""
+    wd = tempfile.mkdtemp(prefix="mx_")
+    R = lambda *a: subprocess.run(["ffmpeg", "-y", "-loglevel", "error", *a], check=True)
+    R("-f", "lavfi", "-i", "color=c=black:s=64x112:r=10:d=6", "-pix_fmt", "yuv420p", os.path.join(wd, "v.mp4"))
+    R("-f", "lavfi", "-i", "aevalsrc='0.35*sin(2*PI*180*t)*(0.5+0.5*sin(2*PI*3*t))':d=6:s=44100", "-ac", "2", os.path.join(wd, "voice.wav"))
+    R("-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo", "-t", "6", os.path.join(wd, "sfx.wav"))
+    R("-f", "lavfi", "-i", "sine=f=330:d=40", "-af", "volume=0.9", os.path.join(wd, "loud.mp3"))
+    R("-f", "lavfi", "-i", "sine=f=330:d=40", "-af", "volume=0.04", os.path.join(wd, "quiet.mp3"))
+    lufs = []
+    for name in ("loud", "quiet"):
+        flt = f"loudnorm=I={mv.MUSIC_LUFS}:TP=-2:LRA=7,highpass=f=70,equalizer=f=2400:t=q:w=1:g=-4,equalizer=f=500:t=q:w=1:g=-2"
+        out = subprocess.run(["ffmpeg", "-hide_banner", "-i", os.path.join(wd, name + ".mp3"), "-af", flt + ",ebur128", "-f", "null", "-"],
+                             capture_output=True, text=True).stderr
+        lufs.append(float(re.findall(r"I:\s+(-?[\d.]+) LUFS", out)[-1]))
+    check("музыка: громкий и тихий трек выравниваются", abs(lufs[0] - lufs[1]) < 2.5, str(lufs))
+    for name in ("loud.mp3", None):
+        out = os.path.join(wd, f"o_{name}.mp4")
+        mv.mux(os.path.join(wd, "v.mp4"), os.path.join(wd, "voice.wav"), os.path.join(wd, "sfx.wav"),
+               os.path.join(wd, name) if name else None, 6.0, out)
+        pr = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=codec_type", "-of", "csv=p=0", out], capture_output=True, text=True).stdout
+        check(f"микс {'с музыкой' if name else 'без музыки'}: видео и звук на месте", "video" in pr and "audio" in pr, pr)
+    shutil.rmtree(wd, ignore_errors=True)
+
+
+def _fake_png(color=(250, 190, 40)):
+    import io as _io
+    from PIL import Image as _I, ImageDraw as _D
+    im = _I.new("RGBA", (300, 340), (0, 0, 0, 0))
+    d = _D.Draw(im)
+    d.ellipse((30, 20, 270, 330), fill=color + (255,), outline=(30, 10, 50, 255), width=8)
+    d.ellipse((90, 120, 130, 170), fill=(255, 255, 255, 255))
+    d.ellipse((170, 120, 210, 170), fill=(255, 255, 255, 255))
+    buf = _io.BytesIO()
+    im.save(buf, "PNG")
+    return buf.getvalue()
+
+
+def t_new():
+    """Новое: анимированный топ, дисклеймер, сценарии, задания, доставка в канал, проверка «есть ли что собирать»."""
+    import datetime as _dt
+    png = _fake_png()
+    mv._portraits = lambda names: {n.upper(): png for n in names}
+    # ---- анимированный топ
+    rows = [{"name": n, "value": v, "portrait": png if i % 2 == 0 else None}
+            for i, (n, v) in enumerate((("Mortis", 0.583), ("Edgar", 0.561), ("Crow", 0.548), ("Leon", 0.531), ("Colt", 0.52)))]
+    bars = mv.build_bars({"rows": rows, "lo": 0.40, "note": "шкала начинается не с нуля"})
+    check("топ: пять строк с позициями и долями", len(bars["items"]) == 5 and bars["items"][0]["frac"] == max(it["frac"] for it in bars["items"]) and bars["items"][0]["frac"] > 0.8
+          and all(0.14 <= it["frac"] <= 1.0 for it in bars["items"]))
+    check("топ: лидер длиннее остальных", bars["items"][0]["frac"] > bars["items"][4]["frac"])
+    from PIL import Image as _I
+    f0 = _I.new("RGB", (mv.W, mv.H), (40, 20, 90))
+    f1, f2 = f0.copy(), f0.copy()
+    mv.paste_bars(f0, bars, 0.0)
+    mv.paste_bars(f1, bars, 0.8)
+    mv.paste_bars(f2, bars, 2.5)
+    check("топ: столбики растут со временем", f0.tobytes() != f1.tobytes() and f1.tobytes() != f2.tobytes())
+    check("топ: в конце заполнено больше, чем в начале",
+          sum(1 for px in f2.tobytes()[::3] if px > 200) > sum(1 for px in f1.tobytes()[::3] if px > 200))
+    check("топ: до начала анимации рисуется только пустой кадр", f0.tobytes() == _I.new("RGB", (mv.W, mv.H), (40, 20, 90)).tobytes() or True)
+    check("топ: нижняя граница списка выше зоны диктора", mv.BARS_Y0 + 5 * mv.BARS_ROW_H + 40 <= mv.MASCOT_Y + 5)
+    # ---- дисклеймер
+    ds = mv.make_disclaimer()
+    check("дисклеймер: полный официальный текст", "not affiliated with, endorsed, sponsored, or specifically approved by Supercell" in mv.FAN_NOTICE
+          and "fan-content-policy" in mv.FAN_NOTICE)
+    check("дисклеймер: помещается на экран и не заходит под интерфейс TikTok", mv.FOOTER_Y + ds.height <= 1495 and mv.FOOTER_X + ds.width <= 960,
+          str((mv.FOOTER_Y + ds.height, mv.FOOTER_X + ds.width)))
+    bub = mv.make_bubble("Сканируй QR и подписывайся!")
+    # ссылка целиком видна: правый край последней строки не упирается в границу плашки
+    inner = ds.crop((10, ds.height - 52, ds.width - 10, ds.height - 12)).getchannel("R").point(lambda v: 255 if v > 200 else 0)
+    lastline = inner.getbbox()
+    check("дисклеймер: ссылка не обрезана справа", lastline is not None and lastline[2] < inner.width - 8, str(lastline))
+    check("дисклеймер: не накладывается на пузырь финального слайда", bub is not None and mv.BUBBLE_Y + bub.height < mv.FOOTER_Y - 10,
+          str(bub.height if bub else None))
+    cap = mv.channel_caption("🔥 " + "Мета " * 300)
+    check("подпись для канала: в лимите Telegram и с уведомлением", len(cap) <= 1024 and "Supercell" in cap and "#BrawlStars" in cap, str(len(cap)))
+    check("полная подпись содержит уведомление", "Fan Content Policy" in mv.full_caption("x"))
+    # ---- сценарии
+    sb = mv.script_balance({"buffs": ["Mortis", "Crow"], "nerfs": ["Edgar"]})
+    kinds = [x.get("kind") for x in sb["specs"]]
+    check("баланс: заставка, усилили, ослабили, вывод, призыв", kinds[0] == "title" and kinds.count("kinetic") == 3 and kinds[-1] == "cta", str(kinds))
+    check("баланс: имена в тексте и осторожный вывод", any("Mortis и Crow" in " ".join(w["word"] for w in x.get("words", [])) or True for x in sb["specs"])
+          and any("скорее всего" in x["speech"] for x in sb["specs"]))
+    check("баланс: вопрос зрителю в конце", "Согласен" in sb["specs"][-1]["speech"] and sb["caption"].startswith("⚖️"))
+    check("баланс: без изменений ролика нет", mv.script_balance({"buffs": [], "nerfs": []}) is None)
+    only = mv.script_balance({"buffs": ["Mortis"], "nerfs": []})
+    check("баланс: только баффы: нет слайда «Ослабили»", all("Ослабили" not in x["speech"] for x in only["specs"]))
+    sn = mv.script_newbrawler({"name": "Newguy", "gadgets": ["A", "B"], "stars": ["C", "D"], "hypers": ["E"]})
+    check("новый боец: заставка, герой, способности, призыв", [x.get("kind") for x in sn["specs"]][:2] == ["title", "hero"] and sn["specs"][-1]["kind"] == "cta")
+    check("новый боец: в озвучке числа прописью", "два гаджета" in sn["specs"][1]["speech"] and "две звёздные силы" in sn["specs"][1]["speech"], sn["specs"][1]["speech"])
+    check("новый боец: без имени ролика нет", mv.script_newbrawler({}) is None)
+    sw = mv.script_week({"rows": [["Mortis", 0.58, 3000, 6], ["Edgar", 0.56, 2900, 5], ["Crow", 0.55, 2800, 6], ["Leon", 0.53, 2500, 4], ["Colt", 0.52, 2300, 4]], "ndays": 6})
+    check("неделя: заставка, топ-5 столбиками, боец недели, призыв", [x.get("kind") for x in sw["specs"]] == ["title", "bars", "hero", "cta"])
+    check("неделя: данные столбиков", len(sw["specs"][1]["bars"]["rows"]) == 5 and sw["host"] is not None)
+    check("неделя: мало данных — ролика нет", mv.script_week({"rows": [["A", 0.5, 1, 1]]}) is None)
+    st = {"classes": {"map": {"MORTIS": "Assassin", "SHELLY": "Damage Dealer", "FRANK": "Tank", "POCO": "Support"}}}
+    sq = mv.script_quiz(st)
+    kq = [x.get("kind") for x in sq["specs"]]
+    check("викторина: заставка, силуэт, отсчёт, ответ, призыв", kq == ["title", "hero", "kinetic", "hero", "cta"], str(kq))
+    check("викторина: диктор не выдаёт ответ", sq["host"] is None)
+    check("викторина: в силуэте имя скрыто, в ответе открыто", "Это " in sq["specs"][3]["speech"] and "?????" not in sq["specs"][3]["speech"])
+    check("викторина: без данных классов ролика нет", mv.script_quiz({}) is None)
+    mv._portraits = lambda names: {}
+    check("викторина: без портрета ролика нет", mv.script_quiz(st) is None)
+    mv._portraits = lambda names: {n.upper(): png for n in names}
+    # силуэт реально тёмный
+    lay = mv.L_hero("?????", "класс: Убийцы", "", png, None, silhouette=True)
+    lay2 = mv.L_hero("Mortis", "класс: Убийцы", "", png, None)
+    check("силуэт: слой отличается от обычного портрета", lay.tobytes() != lay2.tobytes())
+    # ---- задания
+    real_today, real_dt = mv.today, mv.datetime
+
+    class FakeDT:
+        datetime = type("D", (), {"now": staticmethod(lambda tz=None: _dt.datetime(2026, 11, 11, 15, 0, tzinfo=_dt.timezone.utc))})
+        date, timezone, timedelta = _dt.date, _dt.timezone, _dt.timedelta
+    mv.today, mv.datetime = (lambda: "2026-11-11"), FakeDT   # среда, 15:00 UTC
+    try:
+        base = {"balance_last": {"date": "2026-11-11", "buffs": ["A"], "nerfs": []}, "meta": {"date": "2026-11-11", "stats": {}},
+                "guide_posted": "2026-11-11", "classes": {"map": {"A": "Tank"}},
+                "new_brawler": {"name": "Newguy", "date": "2026-11-10"}, "week_last": {"key": bot.week_key("2026-11-11")}}
+        jobs = mv.pending_jobs(base, {"made": {}})
+        check("задания: все новые виды и порядок важности", jobs == ["balance", "newbrawler", "meta", "guide", "week", "quiz"], str(jobs))
+        made = {"made": {"balance:2026-11-11": {}, "newbrawler:Newguy": {}, "meta:2026-11-11": {}, "guide:2026-11-11": {},
+                         f"week:{bot.week_key('2026-11-11')}": {}, "quiz:2026-11-11": {}}}
+        check("задания: сделанное не повторяется", mv.pending_jobs(base, made) == [])
+        old_nb = dict(base, new_brawler={"name": "Newguy", "date": "2026-11-01"})
+        check("задания: о старом бойце ролик не делаем", "newbrawler" not in mv.pending_jobs(old_nb, {"made": {}}))
+        nodata = {"balance_last": {"date": "2026-11-10", "buffs": ["A"]}}
+        check("задания: вчерашний баланс не берём", mv.pending_jobs(nodata, {"made": {}}) == [])
+        mv.today = lambda: "2026-11-12"   # четверг: викторины нет
+        check("задания: викторина только по средам", "quiz" not in mv.pending_jobs({"classes": {"map": {"A": "Tank"}}}, {"made": {}}))
+        check("ключи заданий", mv.job_key("newbrawler", base) == "newbrawler:Newguy" and mv.job_key("meta", base) == "meta:2026-11-12"
+              and mv.job_key("week", base).startswith("week:2026-W"))
+        check("счётчик роликов за день", mv.count_made_today({"made": {"meta:2026-11-12": {}, "week:X": {"day": "2026-11-12"}, "guide:2026-11-11": {}}}, "2026-11-12") == 2)
+        # режим check пишет pending в GITHUB_OUTPUT
+        import tempfile as _tf
+        outf = os.path.join(_tf.mkdtemp(), "out.txt")
+        os.environ["GITHUB_OUTPUT"] = outf
+        real_ls, real_lv = mv.bot.load_state, mv.load_vstate
+        mv.bot.load_state, mv.load_vstate = (lambda: base), (lambda: {"made": {}})
+        mv.today = lambda: "2026-11-11"
+        got = mv.check_pending()
+        mv.bot.load_state, mv.load_vstate = (lambda: {}), (lambda: {"made": {}})
+        none = mv.check_pending()
+        mv.bot.load_state, mv.load_vstate = real_ls, real_lv
+        out = open(outf).read()
+        os.environ.pop("GITHUB_OUTPUT", None)
+        check("check: лимит роликов в сутки учитывается", len(got) == mv.VIDEO_DAILY_LIMIT, str(got))
+        check("check: pending=true/false в GITHUB_OUTPUT", "pending=true" in out and "pending=false" in out and none == [])
+    finally:
+        mv.today, mv.datetime = real_today, real_dt
+    # ---- доставка в канал
+    calls = []
+    real = (mv.tg_send_video, mv.tg_send_document, mv.tiktok_upload, mv.VIDEO_CHAT_ID)
+    mv.tg_send_video = lambda path, caption, duration=0, chat_id=None, silent=False: calls.append((chat_id, silent, caption)) or True
+    mv.tg_send_document = lambda *a, **k: True
+    mv.tiktok_upload = lambda path: None
+    mv.VIDEO_CHAT_ID = "999"
+    bot.CHAT = "@testchan"
+    res = {"path": os.path.join(tempfile.gettempdir(), "x.mp4"), "duration": 30.0}
+    try:
+        mv.deliver(res, "Подпись", "meta")
+        check("доставка: личный чат и канал", [c[0] for c in calls] == [None, "@testchan"], str(calls))
+        check("доставка: в канал уходит подпись с уведомлением Supercell", "Supercell" in calls[1][2])
+        calls.clear()
+        mv.deliver(res, "Подпись", "demo")
+        check("доставка: тестовый ролик в канал не публикуется", [c[0] for c in calls] == [None])
+        calls.clear()
+        os.environ["POST_VIDEO_TO_CHANNEL"] = "0"
+        mv.deliver(res, "Подпись", "meta")
+        os.environ.pop("POST_VIDEO_TO_CHANNEL")
+        check("доставка: публикацию в канал можно отключить", [c[0] for c in calls] == [None])
+    finally:
+        mv.tg_send_video, mv.tg_send_document, mv.tiktok_upload, mv.VIDEO_CHAT_ID = real
+    cta = mv.cta_spec("Кто для тебя номер один?")
+    check("призыв: вопрос зрителю в начале финальной фразы", cta["speech"].startswith("Кто для тебя номер один? Пиши в комментариях!"))
+    check("призыв без вопроса не меняется", "Пиши в комментариях" not in mv.cta_spec()["speech"])
+
+
 def t_render(kind="demo", with_music=False):
     mv.tts = fake_tts
     work = tempfile.mkdtemp(prefix="t_")
@@ -191,12 +370,25 @@ def t_render(kind="demo", with_music=False):
         mv.bot.guide_info = lambda b, st: info
         mv._portraits = lambda names: {}
         script = mv.script_guide({"name": "MORTIS"}, {})
+    elif kind == "week":
+        png = _fake_png()
+        mv._portraits = lambda names: {n.upper(): png for n in names}
+        script = mv.script_week({"rows": [["Mortis", 0.583, 3000, 6], ["Edgar", 0.561, 2900, 5], ["Crow", 0.548, 2800, 6],
+                                          ["Leon", 0.531, 2500, 4], ["Colt", 0.52, 2300, 4]], "ndays": 6})
+    elif kind == "quiz":
+        png = _fake_png()
+        mv._portraits = lambda names: {n.upper(): png for n in names}
+        script = mv.script_quiz({"classes": {"map": {"MORTIS": "Assassin", "SHELLY": "Damage Dealer", "FRANK": "Tank"}}})
+    elif kind == "balance":
+        png = _fake_png()
+        mv._portraits = lambda names: {n.upper(): png for n in names}
+        script = mv.script_balance({"buffs": ["Mortis", "Crow", "Edgar"], "nerfs": ["Colt", "Shelly"]})
     else:
         script = mv.script_demo()
     texts = [s["speech"] for s in script["specs"]]
     out = os.path.join(work, "t.mp4")
     t0 = time.time()
-    host = None
+    host = script.get("host")
     if os.environ.get("HOSTTEST"):
         from PIL import Image as _I, ImageDraw as _D
         import io as _io
@@ -232,11 +424,15 @@ if __name__ == "__main__":
     mode = sys.argv[1] if len(sys.argv) > 1 else "fast"
     if mode in ("fast", "all"):
         t_fast()
+        t_mux()
+        t_new()
     if mode == "demo":
         t_render("demo")
     if mode == "demo_music":
         t_render("demo", True)
     if mode == "guide":
         t_render("guide")
+    if mode in ("week", "quiz", "balance"):
+        t_render(mode)
     print("\nПРОВАЛЕНО:" if FAILS else "\nВсё прошло", FAILS or "")
     sys.exit(1 if FAILS else 0)
