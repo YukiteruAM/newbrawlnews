@@ -268,17 +268,31 @@ def t_new():
     st = {"classes": {"map": {"MORTIS": "Assassin", "SHELLY": "Damage Dealer", "FRANK": "Tank", "POCO": "Support"}}}
     sq = mv.script_quiz(st)
     kq = [x.get("kind") for x in sq["specs"]]
-    check("викторина: заставка, силуэт, отсчёт, ответ, призыв", kq == ["title", "hero", "kinetic", "hero", "cta"], str(kq))
+    check("викторина: заставка, две мозаики, ответ, призыв", kq == ["title", "hero", "hero", "hero", "cta"], str(kq))
     check("викторина: диктор не выдаёт ответ", sq["host"] is None)
-    check("викторина: в силуэте имя скрыто, в ответе открыто", "Это " in sq["specs"][3]["speech"] and "?????" not in sq["specs"][3]["speech"])
+    check("викторина: в мозаике имя скрыто, в ответе открыто", "Это " in sq["specs"][3]["speech"] and "?????" not in sq["specs"][3]["speech"])
     check("викторина: без данных классов ролика нет", mv.script_quiz({}) is None)
     mv._portraits = lambda names: {}
     check("викторина: без портрета ролика нет", mv.script_quiz(st) is None)
     mv._portraits = lambda names: {n.upper(): png for n in names}
-    # силуэт реально тёмный
-    lay = mv.L_hero("?????", "класс: Убийцы", "", png, None, silhouette=True)
-    lay2 = mv.L_hero("Mortis", "класс: Убийцы", "", png, None)
-    check("силуэт: слой отличается от обычного портрета", lay.tobytes() != lay2.tobytes())
+    # мозаика должна быть узнаваемой: у портрета с непрозрачным фоном остаётся много цветов (силуэт давал один чёрный круг)
+    from PIL import Image as _I2, ImageDraw as _D2
+    face = _I2.new("RGB", (300, 340), (60, 120, 220))
+    fd = _D2.Draw(face)
+    fd.ellipse((40, 40, 260, 320), fill=(250, 190, 40))
+    fd.rectangle((80, 20, 220, 90), fill=(200, 30, 60))
+    fd.ellipse((100, 140, 140, 180), fill=(255, 255, 255))
+    fd.ellipse((170, 140, 210, 180), fill=(30, 20, 60))
+    m1, m2 = mv._mosaic(face.convert("RGBA"), 9), mv._mosaic(face.convert("RGBA"), 20)
+    c1, c2 = len(set(m1.getdata())), len(set(m2.getdata()))
+    check("мозаика: цвета и форма сохраняются (не плоский круг)", c1 >= 8 and c2 > c1, str((c1, c2)))
+    check("мозаика: размер не меняется", m1.size == face.size and m2.size == face.size)
+    buf2 = __import__("io").BytesIO()
+    face.save(buf2, "PNG")
+    lay_a = mv.L_hero("?????", "класс: Убийцы", "", buf2.getvalue(), None, pixelate=9)
+    lay_b = mv.L_hero("?????", "класс: Убийцы", "", buf2.getvalue(), None, pixelate=20)
+    lay_c = mv.L_hero("Mortis", "класс: Убийцы", "", buf2.getvalue(), None)
+    check("мозаика: этапы и ответ отличаются друг от друга", len({lay_a.tobytes(), lay_b.tobytes(), lay_c.tobytes()}) == 3)
     # ---- задания
     real_today, real_dt = mv.today, mv.datetime
 
