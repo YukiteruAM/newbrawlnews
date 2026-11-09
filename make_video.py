@@ -19,7 +19,7 @@ import bot
 # ===================== НАСТРОЙКИ И ЛИМИТЫ =====================
 W, H, FPS = 1080, 1920, int(os.environ.get("VIDEO_FPS") or 30)   # 30 к/с: родная частота TikTok, движение заметно плавнее
 VIDEO_STATE = "videos.json"
-VIDEO_DAILY_LIMIT = 2            # не больше двух роликов в сутки: так канал не выглядит спамом
+VIDEO_DAILY_LIMIT = 4            # не больше четырёх роликов в сутки: так канал не выглядит спамом
 MAX_VIDEO_SEC = 58               # до минуты: длиннее ролики досматривают реже
 MIN_SLIDE_SEC = 1.6              # быстрый монтаж: кадры сменяются каждые 2-3 секунды
 CTA_MIN_SEC = 5.0                # финальный кадр с QR держим дольше, чтобы успели навести камеру
@@ -28,6 +28,7 @@ POP_FRAMES = max(5, round(0.375 * FPS))   # длина анимации появ
 OUT_DIR = "out"
 MUSIC_DIR = "music"              # сюда клади СВОИ треки или музыку без авторских прав
 MUSIC_VOLUME, SFX_VOLUME = 0.12, 0.30
+MUSIC_LUFS = float(os.environ.get("MUSIC_LUFS") or -26)   # громкость фоновой музыки до приглушения голосом
 TTS_VOICE = os.environ.get("TTS_VOICE") or "ru-RU-DmitryNeural"
 TTS_RATE = os.environ.get("TTS_RATE") or "+12%"      # чуть бодрее обычного, но имена и цифры ещё разборчивы
 TTS_PITCH = os.environ.get("TTS_PITCH") or "+0Hz"
@@ -1236,12 +1237,17 @@ def L_title(title, subtitle="", accent=PURPLE):
     return layer
 
 
-def L_hero(name, chip1="", chip2="", portrait=None, rank=None):
+def L_hero(name, chip1="", chip2="", portrait=None, rank=None, silhouette=False):
     layer = new_layer()
     d = bot.ImageDraw.Draw(layer)
     if portrait:
         try:
-            pm = _sticker(_prep_portrait(bot._portrait(portrait, 560)), 16, 8)
+            pm = _prep_portrait(bot._portrait(portrait, 560))
+            if silhouette:  # викторина «Угадай по силуэту»: портрет заливается тёмным цветом
+                sil = bot.Image.new("RGBA", pm.size, (18, 8, 44, 255))
+                sil.putalpha(pm.getchannel("A"))
+                pm = sil
+            pm = _sticker(pm, 16, 8)
             sh = bot.Image.new("RGBA", (W, H), (0, 0, 0, 0))
             bot.ImageDraw.Draw(sh).ellipse((W // 2 - 260, 640, W // 2 + 260, 720), fill=(0, 0, 0, 120))
             layer.alpha_composite(sh.filter(bot.ImageFilter.GaussianBlur(14)))
@@ -1416,6 +1422,8 @@ def render_frames(slides, bgs, particles, sprites, total):
         cy += CONTENT_DY
         bubble = sl.get("bubble")
         kin = sl.get("kin")
+        bars = sl.get("bars")
+        footer = sl.get("footer")
         bg = bgs[si % len(bgs)]
         bcolor = BURST_COLORS[si % len(BURST_COLORS)]
         burst = get_burst(bcolor) if sl.get("burst", True) else None
@@ -1470,9 +1478,11 @@ def render_frames(slides, bgs, particles, sprites, total):
                     frame.paste(ov, (0, 0), ov)
             if kin:
                 paste_kinetic(frame, kin, tt)
+            if bars:
+                paste_bars(frame, bars, tt)
             # ведущий
             mouth = sl["mouth"][k] if k < len(sl["mouth"]) else 0
-            if bubble is None:  # без пузыря диктор крупнее: на текстовых слайдах он главный собеседник
+            if bubble is None and sl.get("kind") != "bars":  # без пузыря диктор крупнее: на текстовых слайдах он главный собеседник
                 hs = sprites.render(gt, mouth, kk, si, 1.3)
                 frame.paste(hs, (0, 1495 - hs.height), hs)
             else:
@@ -1481,6 +1491,8 @@ def render_frames(slides, bgs, particles, sprites, total):
             if bubble is not None:
                 bb = _scaled(bubble, 0.7 + 0.3 * pe) if k < POP_FRAMES else bubble
                 frame.paste(bb, (400, BUBBLE_Y + (bubble.height - bb.height) // 2), bb)
+            if footer is not None:
+                frame.paste(footer, (FOOTER_X, FOOTER_Y), footer)
             for te, _ex, _ey in sl.get("emph", []):  # короткий наезд камеры на важное слово
                 q = tt - te
                 if 0 <= q < 0.18:
@@ -1627,8 +1639,19 @@ def mux(video, voice, sfx, music, total, out_path):
     flt = (f"[1:a]acompressor=threshold=-20dB:ratio=3:attack=5:release=80[vc];[2:a]volume={SFX_VOLUME}[s];"
            "[vc][s]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[v]")
     if music:
-        cmd += ["-stream_loop", "-1", "-i", music]
-        flt += (f";[v]asplit=2[v1][v2];[3:a]volume={MUSIC_VOLUME * 1.8:.3f},afade=t=in:d=1,afade=t=out:st={max(0, total - 1.5):.2f}:d=1.5[m];"
+        off = 0.0
+        try:  # у длинного трека каждый ролик стартует с другого места, чтобы ролики не звучали одинаково
+            mdur = audio_duration(music)
+            if mdur > total + 6:
+                off = round(random.Random(today() + os.path.basename(music)).uniform(0, mdur - total - 3), 2)
+        except Exception:
+            off = 0.0
+        cmd += (["-ss", f"{off}"] if off else []) + ["-stream_loop", "-1", "-i", music]
+        # трек выравнивается по громкости (любой файл звучит одинаково), из него вырезается «карман» под голос
+        # (убираем низкий гул и середину, где живёт речь), а при речи он приглушается (sidechain)
+        flt += (f";[v]asplit=2[v1][v2];[3:a]loudnorm=I={MUSIC_LUFS}:TP=-2:LRA=7,highpass=f=70,"
+                "equalizer=f=2400:t=q:w=1:g=-4,equalizer=f=500:t=q:w=1:g=-2,"
+                f"afade=t=in:d=1,afade=t=out:st={max(0, total - 1.5):.2f}:d=1.5[m];"
                 "[m][v2]sidechaincompress=threshold=0.03:ratio=9:attack=15:release=400[md];"
                 f"[v1][md]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,{LOUDNORM}[a]")
     else:
@@ -1636,6 +1659,106 @@ def mux(video, voice, sfx, music, total, out_path):
     cmd += ["-filter_complex", flt, "-map", "0:v", "-map", "[a]", "-c:v", "copy", "-c:a", "aac", "-b:a", "160k",
             "-t", f"{total:.3f}", "-movflags", "+faststart", out_path]
     run(cmd)
+
+
+# ---- анимированный топ: столбики растут, проценты «набегают», портреты в кружках
+BAR_COLORS = [(255, 205, 40), (200, 212, 230), (255, 150, 70), (80, 170, 255), (175, 105, 255)]
+BARS_Y0, BARS_ROW_H, BARS_X0, BARS_X1 = 310, 128, 215, 1020
+
+
+def _bar_badge(png, name, rank):
+    """Портрет бойца в кружке с номером места (без портрета: инициалы)."""
+    Image, ImageDraw = bot.Image, bot.ImageDraw
+    S = 118
+    im = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+    d = ImageDraw.Draw(im)
+    d.ellipse((0, 0, S - 1, S - 1), fill=(255, 255, 255, 255))
+    face = Image.new("RGBA", (S - 14, S - 14), PURPLE + (255,))
+    drawn = False
+    if png:
+        try:
+            pm = _prep_portrait(Image.open(io.BytesIO(png)))
+            k = min((S - 14) / pm.width, (S - 14) / pm.height)
+            pm = pm.resize((max(1, int(pm.width * k)), max(1, int(pm.height * k))), Image.LANCZOS)
+            _over(face, pm, (face.width - pm.width) // 2, face.height - pm.height)
+            drawn = True
+        except Exception:
+            drawn = False
+    if not drawn:
+        ImageDraw.Draw(face).text((face.width // 2, face.height // 2), name[:2].upper(), font=bot.card_font(44),
+                                  fill=(255, 255, 255, 255), anchor="mm")
+    mask = Image.new("L", face.size, 0)
+    ImageDraw.Draw(mask).ellipse((0, 0, face.width - 1, face.height - 1), fill=255)
+    im.paste(face, (7, 7), mask)
+    d.ellipse((S - 46, S - 46, S - 2, S - 2), fill=DARK + (255,), outline=(255, 255, 255, 255), width=3)
+    d.text((S - 24, S - 25), str(rank), font=bot.card_font(32), fill=(255, 255, 255, 255), anchor="mm")
+    return im
+
+
+def build_bars(src):
+    """Готовит анимированный топ. src: {'rows': [{'name','value','portrait'}], 'lo': нижняя граница шкалы, 'note': подпись}."""
+    rows = src["rows"][:5]
+    lo = src.get("lo", 0.40)
+    hi = max(r["value"] for r in rows) + 0.02
+    items = []
+    for i, r in enumerate(rows):
+        frac = max(0.14, min(1.0, (r["value"] - lo) / max(0.01, hi - lo)))
+        items.append({"name": r["name"].upper(), "value": r["value"], "frac": frac, "y": BARS_Y0 + i * BARS_ROW_H,
+                      "spr": _bar_badge(r.get("portrait"), r["name"], i + 1), "color": BAR_COLORS[i], "t0": 0.25 + i * 0.18})
+    return {"items": items, "note": src.get("note", "")}
+
+
+def bars_end_x(it):
+    return int(BARS_X0 + 6 + (BARS_X1 - BARS_X0 - 12) * it["frac"])
+
+
+def paste_bars(frame, bars, tt):
+    """Столбики растут по очереди; значение набегает вместе со столбиком."""
+    d = bot.ImageDraw.Draw(frame)
+    fn, fv = bot.card_font(44), bot.card_font(48)
+    for i, it in enumerate(bars["items"]):
+        if tt < it["t0"] - 0.1:
+            continue
+        p = max(0.0, min(1.0, (tt - it["t0"]) / 0.9))
+        e = 1 - (1 - p) ** 3
+        y = it["y"]
+        frame.paste(it["spr"], (62, y + 2), it["spr"])
+        d.rounded_rectangle((BARS_X0, y + 16, BARS_X1, y + 102), radius=43, fill=(24, 12, 60), outline=(255, 255, 255), width=4)
+        fw = int((BARS_X1 - BARS_X0 - 12) * it["frac"] * e)
+        if fw > 36:
+            d.rounded_rectangle((BARS_X0 + 6, y + 22, BARS_X0 + 6 + fw, y + 96), radius=37, fill=it["color"], outline=DARK, width=4)
+            light = tuple(min(255, int(c + (255 - c) * 0.45)) for c in it["color"])
+            d.rounded_rectangle((BARS_X0 + 24, y + 28, BARS_X0 + 6 + fw - 18, y + 40), radius=6, fill=light)
+        d.text((BARS_X0 + 30, y + 60), it["name"], font=fn, fill=(255, 255, 255), anchor="lm", stroke_width=4, stroke_fill=DARK)
+        d.text((BARS_X1 - 22, y + 60), bot.pct(it["value"] * e), font=fv, fill=(255, 255, 255), anchor="rm",
+               stroke_width=5, stroke_fill=DARK)
+    if bars.get("note"):
+        d.text((W // 2, BARS_Y0 + len(bars["items"]) * BARS_ROW_H + 14), bars["note"], font=bot.card_font(30),
+               fill=(235, 230, 255), anchor="mm", stroke_width=3, stroke_fill=DARK)
+
+
+# ---- обязательное уведомление Supercell для фан-контента (формулировка из Fan Content Policy)
+FAN_NOTICE = ("This content is not affiliated with, endorsed, sponsored, or specifically approved by Supercell and "
+              "Supercell is not responsible for it. For more information see Supercell's Fan Content Policy: "
+              "www.supercell.com/fan-content-policy.")
+FOOTER_X, FOOTER_Y, FOOTER_W = 400, 1215, 555
+
+
+def make_disclaimer():
+    """Плашка с уведомлением на финальном слайде (читаемым шрифтом, не перекрывает диктора и пузырь).
+    Ссылка выводится отдельной строкой с подбором размера, чтобы не обрезаться."""
+    Image, ImageDraw = bot.Image, bot.ImageDraw
+    f = bot.card_font(26)
+    main, _, url = FAN_NOTICE.rpartition(" ")
+    lines = bot._wrap(_probe(), main, f, FOOTER_W - 36)
+    lh = 32
+    im = Image.new("RGBA", (FOOTER_W, (len(lines) + 1) * lh + 28), (0, 0, 0, 0))
+    d = ImageDraw.Draw(im)
+    d.rounded_rectangle((0, 0, im.width - 1, im.height - 1), radius=22, fill=(10, 5, 30, 228), outline=(255, 255, 255, 210), width=3)
+    for i, line in enumerate(lines):
+        d.text((18, 14 + i * lh + lh // 2), line, font=f, fill=(255, 255, 255, 255), anchor="lm")
+    d.text((18, 14 + len(lines) * lh + lh // 2), url, font=bot._fit(d, url, FOOTER_W - 36, 26, 14), fill=(255, 255, 255, 255), anchor="lm")
+    return im
 
 
 def word_times(words, lead, span):
@@ -1830,7 +1953,7 @@ def render_video(specs, out_path, vstate=None, seed=0, host=None):
                            "voice_dur": audio_duration(wav) if wav else 0.0, "priority": sp.get("priority", 5),
                            "group": sp.get("group") or f"s{i}", "words": sp.get("words"), "lead": sp.get("lead", ""),
                            "accent": sp.get("accent"), "sfx": sp.get("sfx", "whoosh"), "kind": sp.get("kind", ""),
-                           "segs": segs})
+                           "segs": segs, "bars_src": sp.get("bars")})
         while sum(s["dur"] for s in slides) > MAX_VIDEO_SEC and len(slides) > 2:
             groups = {}
             for sl in slides[1:-1]:
@@ -1853,6 +1976,13 @@ def render_video(specs, out_path, vstate=None, seed=0, host=None):
                          else word_times(sl["words"], sl.get("lead", ""), span))
                 sl["kin"] = build_kinetic(sl["words"], times)
                 sl["emph"] = emphasis_events(sl["kin"])
+            if sl.get("bars_src"):  # анимированный топ: без взрыва за столбиками, чтобы цифры читались
+                sl["bars"] = build_bars(sl["bars_src"])
+                sl["burst"] = False
+                first = sl["bars"]["items"][0]
+                sl["emph"] = [(first["t0"] + 0.9, bars_end_x(first), first["y"] + 60)]  # «удар» на столбике лидера
+            if sl["kind"] == "cta":
+                sl["footer"] = make_disclaimer()
             sl["burst_y"] = BURST_Y.get(sl["kind"], 560)
             sl["props"] = PROPS.get(sl["kind"], [])
             sl["content"] = _crop_layer(_orient(sl["layer"]))
@@ -1917,8 +2047,11 @@ HOOKS = [("Кто сильнее всех?", "мета Brawl Stars сегодн�
          ("Топ бойцов дня", "что берут лучшие игроки", "Топ бойцов за сутки! Угадаешь, кто первый?")]
 
 
-def cta_spec():
+def cta_spec(question=""):
+    """Финальный кадр: вопрос зрителю (комментарии усиливают охват) и призыв подписаться."""
     speech = random.Random(today() + "cta").choice(CTA_SPEECHES)  # фразы чередуются по дням: ролики не слипаются в один
+    if question:
+        speech = f"{question} Пиши в комментариях! {speech}"
     return {"layer": L_cta(CTA_HANDLE, QR_URL), "speech": speech, "caption": "Сканируй QR и подписывайся!",
             "priority": 10, "min": CTA_MIN_SEC, "sfx": "ding", "accent": YELLOW, "kind": "cta"}
 
@@ -1945,11 +2078,127 @@ def script_meta(meta):
         specs.append({"layer": L_hero(pop[0], "самый популярный", f"{bot.pct(pop[3])} побед", por.get(pop[0].upper())),
                       "speech": f"Самый популярный: {pop[0]}. Его берут в {bot.pct(pop[1] / total)} боёв.",
                       "caption": f"Самый популярный: {pop[0]}", "priority": 3, "accent": GREEN, "kind": "hero"})
-    specs.append(cta_spec())
+    if len(rows) >= 5:  # анимированный топ-5: цифры вместо слов
+        top5 = rows[:5]
+        por.update(_portraits([r[0] for r in top5 if r[0].upper() not in por]))
+        specs.append({"layer": L_kinetic("Топ-5 по рейтингу", BLUE), "kind": "bars", "priority": 4, "accent": BLUE, "caption": "",
+                      "speech": "А вот весь топ пять по рейтингу: " + ", ".join(r[0] for r in top5) + ".",
+                      "bars": {"rows": [{"name": r[0], "value": r[3], "portrait": por.get(r[0].upper())} for r in top5],
+                               "lo": min(0.40, min(r[3] for r in top5) - 0.05), "note": "шкала начинается не с нуля"}})
+    specs.append(cta_spec("Кто для тебя номер один?"))
     names = ", ".join(r[0] for r in top3)
     top1 = top3[0][0]
     return {"kind": "meta", "specs": specs, "host": (por[top1.upper()], top1) if por.get(top1.upper()) else None,
             "caption": f"🔥 Мета Brawl Stars сегодня: {names}. Кого берёте вы?"}
+
+
+def _join_names(names, limit=5):
+    names = list(names)
+    if len(names) > limit:
+        return ", ".join(names[:limit]) + " и другие"
+    if len(names) <= 1:
+        return "".join(names)
+    return ", ".join(names[:-1]) + " и " + names[-1]
+
+
+def script_balance(bl):
+    """Ролик «Баланс»: кого усилили и ослабили. Данные бот сохраняет сразу после публикации разбора баланса в канале."""
+    buffs, nerfs = list(bl.get("buffs") or []), list(bl.get("nerfs") or [])
+    if not (buffs or nerfs):
+        return None
+    first = (buffs or nerfs)[0]
+    por = _portraits([first]).get(first.upper())
+    specs = [{"layer": L_title("Баланс изменился!", "разбор за минуту"), "kind": "title", "priority": 10, "accent": ORANGE,
+              "speech": "Баланс в Бравл Старс изменился! Разбираем, кого усилили и кого ослабили.", "caption": "Обновление баланса"}]
+    if buffs:
+        specs += text_specs("Усилили", _join_names(buffs) + ".", GREEN, 8, say_first="Усилили.")
+    if nerfs:
+        specs += text_specs("Ослабили", _join_names(nerfs) + ".", RED, 8, say_first="Ослабили.")
+    meaning = ("Усиленных бойцов, скорее всего, станут брать чаще, а ослабленных реже." if buffs and nerfs else
+               "Усиленных бойцов, скорее всего, станут брать чаще." if buffs else
+               "Ослабленных бойцов, скорее всего, будут брать реже.")
+    specs += text_specs("Что это значит", meaning, BLUE, 6)
+    specs.append(cta_spec("Согласен с изменениями?"))
+    tail = ("усилили " + ", ".join(buffs[:4]) if buffs else "") + ("; " if buffs and nerfs else "") + \
+           ("ослабили " + ", ".join(nerfs[:4]) if nerfs else "")
+    return {"kind": "balance", "specs": specs, "host": (por, first) if por else None,
+            "caption": f"⚖️ Баланс Brawl Stars: {tail}. Согласны с изменениями?"}
+
+
+def script_newbrawler(nb):
+    """Ролик «Новый боец» по данным официального API: имя, гаджеты, звёздные силы."""
+    name = nb.get("name")
+    if not name:
+        return None
+    gad, stars, hyp = nb.get("gadgets") or [], nb.get("stars") or [], nb.get("hypers") or []
+    por = _portraits([name]).get(name.upper())
+    parts = []
+    if gad:
+        parts.append(f"{num_words(len(gad))} {plural(len(gad), 'гаджет', 'гаджета', 'гаджетов')}")
+    if stars:
+        parts.append(f"{num_words(len(stars), True)} {plural(len(stars), 'звёздная сила', 'звёздные силы', 'звёздных сил')}")
+    hero_say = f"Это {name}!" + (f" У него {' и '.join(parts)}." if parts else "")
+    specs = [{"layer": L_title("Новый боец!", "знакомьтесь"), "kind": "title", "priority": 10, "accent": PINK,
+              "speech": f"Новый боец в Бравл Старс! Знакомьтесь: {name}!", "caption": "Новый боец"},
+             {"layer": L_hero(name, "новый боец", f"{len(gad)} гаджета" if gad else "", por), "kind": "hero", "priority": 9,
+              "accent": ORANGE, "sfx": "ding", "speech": hero_say, "caption": f"Новый боец: {name}"}]
+    if gad:
+        specs += text_specs("Гаджеты", _join_names(gad, 4) + ".", ORANGE, 7, say_first="Гаджеты.")
+    if stars:
+        specs += text_specs("Звёздные силы", _join_names(stars, 4) + ".", PINK, 7, say_first="Звёздные силы.")
+    if hyp:
+        specs += text_specs("Гиперзаряд", _join_names(hyp, 3) + ".", PURPLE, 5, say_first="Гиперзаряд.")
+    specs.append(cta_spec("Берёшь нового бойца?"))
+    return {"kind": "newbrawler", "specs": specs, "host": (por, name) if por else None,
+            "caption": f"🆕 Новый боец в Brawl Stars: {name}. Берёте?"}
+
+
+def script_week(wl):
+    """Ролик «Мета недели» из данных, которые бот сохранил при публикации недельного поста."""
+    rows = wl.get("rows") or []
+    if len(rows) < 3:
+        return None
+    top5 = rows[:5]
+    por = _portraits([r[0] for r in top5])
+    vals = [r[1] for r in top5]
+    first = top5[0]
+    specs = [{"layer": L_title("Мета недели", f"топ бойцов за {wl.get('ndays', 7)} дн."), "kind": "title", "priority": 10,
+              "accent": PURPLE, "speech": "Мета Бравл Старс за неделю! Кто был сильнее всех?", "caption": "Мета недели"},
+             {"layer": L_kinetic("Топ-5 недели", BLUE), "kind": "bars", "priority": 8, "accent": BLUE, "caption": "",
+              "speech": "Вот топ пять недели по рейтингу: " + ", ".join(r[0] for r in top5) + ".",
+              "bars": {"rows": [{"name": r[0], "value": r[1], "portrait": por.get(r[0].upper())} for r in top5],
+                       "lo": min(0.40, min(vals) - 0.05), "note": "шкала начинается не с нуля"}},
+             {"layer": L_hero(first[0], f"{bot.pct(first[1])} побед", f"в рейтинге дней: {first[3]}", por.get(first[0].upper()), 1),
+              "kind": "hero", "priority": 7, "accent": ORANGE, "sfx": "ding",
+              "speech": f"Боец недели: {first[0]}! {bot.pct(first[1])} побед.", "caption": f"Боец недели: {first[0]}"},
+             cta_spec("Согласен с таким топом?")]
+    names = ", ".join(r[0] for r in top5[:3])
+    return {"kind": "week", "specs": specs, "host": (por[first[0].upper()], first[0]) if por.get(first[0].upper()) else None,
+            "caption": f"🏆 Мета недели в Brawl Stars: {names}. Согласны с таким топом?"}
+
+
+def script_quiz(state):
+    """Рубрика «Угадай бойца по силуэту»: класс из данных Brawlify подсказка, ответ показывается после отсчёта."""
+    cmap = (state.get("classes") or {}).get("map") or {}
+    pool = sorted(n for n, c in cmap.items() if c in bot.CLASSES_RU)
+    if not pool:
+        return None
+    who = random.Random(today() + "quiz").choice(pool)
+    name, cls = bot.nice_name(who), bot.CLASSES_RU[cmap[who]]
+    por = _portraits([name]).get(name.upper())
+    if not por:
+        print("викторина: нет портрета бойца, ролик пропускаю")
+        return None
+    specs = [{"layer": L_title("Угадай бойца!", "по силуэту"), "kind": "title", "priority": 10, "accent": PINK,
+              "speech": "Угадай бойца по силуэту! Время пошло.", "caption": "Угадай бойца"},
+             {"layer": L_hero("?????", f"класс: {cls}", "", por, None, silhouette=True), "kind": "hero", "priority": 10,
+              "accent": PURPLE, "speech": f"Подсказка: он из класса {cls}. Пиши ответ в комментариях!", "caption": "Кто это?"}]
+    specs += text_specs("Ответ через", "Три... Два... Один...", YELLOW, 10)
+    specs += [{"layer": L_hero(name, cls, "", por), "kind": "hero", "priority": 10, "accent": ORANGE, "sfx": "ding",
+               "speech": f"Это {name}! Угадал?", "caption": f"Это {name}!"},
+              cta_spec("Угадал? Пиши ответ!")]
+    return {"kind": "quiz", "specs": specs, "host": None,
+            "caption": "🎯 Угадай бойца Brawl Stars по силуэту! Ответ в конце ролика. Угадали?"}
 
 
 def script_guide(b, state):
@@ -1970,7 +2219,7 @@ def script_guide(b, state):
     if info["tip"]:
         specs += text_specs("Как играть", info["tip"], BLUE, 8)
     specs += text_specs("Важно", "Это универсальный разбор. Выбирай под карту и режим.", RED, 9)
-    specs.append(cta_spec())
+    specs.append(cta_spec("Играешь за этого бойца?"))
     if len(specs) < 4:
         return None
     return {"kind": "guide", "specs": specs, "host": (por, info["name"]) if por else None,
@@ -2016,10 +2265,17 @@ def save_vstate(v):
 
 def full_caption(text):
     handle = f"\n\nТелеграм-канал: {CTA_HANDLE} (ссылка в профиле)" if CTA_HANDLE else "\n\nТелеграм-канал в профиле"
-    return f"{text}{handle}\n\n{HASHTAGS}"
+    return f"{text}{handle}\n\n{HASHTAGS}\n\n{FAN_NOTICE}"
 
 
-def tg_send_video(path, caption, duration=0, chat_id=None):
+def channel_caption(text):
+    """Подпись для ролика в самом канале (лимит Telegram 1024 знака): текст, обязательное уведомление и хештеги."""
+    tags = "#BrawlStars #бравлстарс #видео"
+    room = 1000 - len(FAN_NOTICE) - len(tags) - 8
+    return f"{text[:max(80, room)]}\n\n{FAN_NOTICE}\n\n{tags}"
+
+
+def tg_send_video(path, caption, duration=0, chat_id=None, silent=False):
     """Отправляет готовый ролик в личный чат с ботом (до 50 МБ)."""
     chat_id = chat_id or VIDEO_CHAT_ID
     if not chat_id or not bot.TOKEN:
@@ -2027,7 +2283,7 @@ def tg_send_video(path, caption, duration=0, chat_id=None):
     b = uuid.uuid4().hex
     body = io.BytesIO()
     for name, val in (("chat_id", chat_id), ("caption", caption[:1000]), ("supports_streaming", "true"),
-                      ("width", W), ("height", H), ("duration", int(duration))):
+                      ("width", W), ("height", H), ("duration", int(duration))) + ((("disable_notification", "true"),) if silent else ()):
         body.write(f'--{b}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{val}\r\n'.encode())
     body.write((f'--{b}\r\nContent-Disposition: form-data; name="video"; filename="video.mp4"\r\n'
                 'Content-Type: video/mp4\r\n\r\n').encode())
@@ -2147,7 +2403,7 @@ def voice_test():
         print("вариант D не получился:", ex)
 
 
-def deliver(result, caption):
+def deliver(result, caption, kind=""):
     """Отправляет ролик туда, куда настроено. Любая ошибка доставки не ломает запуск."""
     text = full_caption(caption)
     with open(os.path.splitext(result["path"])[0] + ".txt", "w") as f:
@@ -2165,6 +2421,14 @@ def deliver(result, caption):
             print("оригинал отправлен документом")
         except Exception as ex:
             print("оригинал документом не отправился:", ex)
+    if kind != "demo" and os.environ.get("POST_VIDEO_TO_CHANNEL", "1") != "0" and bot.CHAT:
+        try:  # тот же ролик в канал: подписчики смотрят его там же, ночью без звука уведомления
+            quiet = bot.in_quiet_hours(datetime.datetime.now(datetime.timezone.utc))
+            if tg_send_video(result["path"], channel_caption(caption), result["duration"], chat_id=bot.CHAT, silent=quiet):
+                print("ролик опубликован в канале")
+                sent = True
+        except Exception as ex:
+            print("ролик не опубликовался в канале (бот должен быть админом с правом публикации):", ex)
     try:
         pid = tiktok_upload(result["path"])
         if pid is not None:
@@ -2180,14 +2444,45 @@ def today():
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
 
 
+VIDEO_KINDS = ("balance", "newbrawler", "meta", "guide", "week", "quiz")  # порядок важности: сначала срочное
+
+
 def pending_jobs(state, vstate, force=()):
-    """Какие ролики пора делать: мета и гайд, уже опубликованные сегодня в канале и ещё не превращённые в видео."""
+    """Какие ролики пора делать. Срочное (баланс, новый боец) собирается в течение часа после события,
+    остальное после публикации в канале: мета, гайд, мета недели, по средам викторина."""
     day, made, jobs = today(), vstate["made"], []
+    now = datetime.datetime.now(datetime.timezone.utc)
+    bl = state.get("balance_last") or {}
+    if "balance" in force or (bl.get("date") == day and (bl.get("buffs") or bl.get("nerfs")) and f"balance:{day}" not in made):
+        jobs.append("balance")
+    nb = state.get("new_brawler") or {}
+    try:
+        fresh = bool(nb.get("name")) and (datetime.date.fromisoformat(day) - datetime.date.fromisoformat(nb.get("date", "2000-01-01"))).days <= 2
+    except Exception:
+        fresh = False
+    if "newbrawler" in force or (fresh and f"newbrawler:{nb['name']}" not in made):
+        jobs.append("newbrawler")
     if "meta" in force or ((state.get("meta") or {}).get("date") == day and f"meta:{day}" not in made):
         jobs.append("meta")
     if "guide" in force or (state.get("guide_posted") == day and f"guide:{day}" not in made):
         jobs.append("guide")
+    wk = state.get("week_last") or {}
+    if "week" in force or (wk.get("key") and wk.get("key") == bot.week_key(day) and f"week:{wk['key']}" not in made):
+        jobs.append("week")
+    if "quiz" in force or (datetime.date.fromisoformat(day).weekday() == 2 and now.hour >= 13 and f"quiz:{day}" not in made
+                           and (state.get("classes") or {}).get("map")):
+        jobs.append("quiz")
     return jobs
+
+
+def job_key(kind, state):
+    """Ключ в videos.json: по нему ролик не собирается дважды."""
+    day = today()
+    if kind == "newbrawler":
+        return f"newbrawler:{(state.get('new_brawler') or {}).get('name', '')}"
+    if kind == "week":
+        return f"week:{(state.get('week_last') or {}).get('key', day)}"
+    return f"{kind}:{day}"
 
 
 def make_one(kind, state):
@@ -2205,9 +2500,36 @@ def make_one(kind, state):
             return None
         found = [b for b in bot.load_brawlify() if b["name"].upper() == name.upper()]
         return script_guide(found[0], state) if found else None
+    if kind == "balance":
+        return script_balance(state.get("balance_last") or {})
+    if kind == "newbrawler":
+        return script_newbrawler(state.get("new_brawler") or {})
+    if kind == "week":
+        return script_week(state.get("week_last") or {})
+    if kind == "quiz":
+        return script_quiz(state)
     if kind == "demo":
         return script_demo()
     return None
+
+
+def count_made_today(vstate, day):
+    return sum(1 for k, v in vstate["made"].items() if k.endswith(day) or (isinstance(v, dict) and v.get("day") == day))
+
+
+def check_pending():
+    """python make_video.py check: есть ли что собирать. Результат в лог и в GITHUB_OUTPUT (pending=true/false).
+    Без этого каждый часовой запуск зря ставил бы ffmpeg и шрифты."""
+    state, vstate = bot.load_state(), load_vstate()
+    jobs = pending_jobs(state, vstate)
+    room = VIDEO_DAILY_LIMIT - count_made_today(vstate, today())
+    jobs = jobs[:max(0, room)]
+    print("к сборке:", ", ".join(jobs) if jobs else "ничего")
+    out = os.environ.get("GITHUB_OUTPUT")
+    if out:
+        with open(out, "a") as f:
+            f.write(f"pending={'true' if jobs else 'false'}\n")
+    return jobs
 
 
 def main(argv=None):
@@ -2215,6 +2537,8 @@ def main(argv=None):
     mode = argv[0] if argv else "auto"
     if mode == "voicetest":
         return voice_test()
+    if mode == "check":
+        return check_pending()
     bot.ensure_pillow()
     if setup_fonts():
         print("шрифт Russo One подключён")
@@ -2223,7 +2547,7 @@ def main(argv=None):
     vstate = load_vstate()
     jobs = pending_jobs(state, vstate) if mode == "auto" else [mode]
     day = today()
-    made_today = sum(1 for k in vstate["made"] if k.endswith(day))
+    made_today = count_made_today(vstate, day)
     os.makedirs(OUT_DIR, exist_ok=True)
     errors = 0
     for kind in jobs:
@@ -2238,9 +2562,9 @@ def main(argv=None):
             res = render_video(script["specs"], out, vstate, seed=len(kind), host=script.get("host"))
             print(f"ролик собран: {out}, {res['duration']:.1f} с, слайдов {res['slides']}, "
                   f"голос: {'да' if res['voiced'] else 'нет'}, музыка: {res['music'] or 'нет'}")
-            delivered = deliver(res, script["caption"])
+            delivered = deliver(res, script["caption"], kind)
             if kind != "demo":
-                vstate["made"][f"{kind}:{day}"] = {"delivered": bool(delivered), "sec": round(res["duration"], 1)}
+                vstate["made"][job_key(kind, state)] = {"delivered": bool(delivered), "sec": round(res["duration"], 1), "day": day}
                 made_today += 1
         except Exception as ex:
             errors += 1
