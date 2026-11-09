@@ -24,6 +24,14 @@ DAILY_TOTAL_LIMIT = 40        # всё вместе: новости, сообщ�
 DAILY_GUIDE_LIMIT = 1         # гайд на бойца: один в сутки
 QUIET_HOURS_UTC = (21, 4)     # обычные посты не выходят с 00:00 до 07:00 по Москве (важные выходят всегда)
 PAUSE = 3                     # пауза между постами, сек
+SILENT_REGULAR = os.environ.get("SILENT_REGULAR", "1") != "0"  # обычные новости без звука уведомления, со звуком только «важное»
+DIGEST_HOUR_UTC = 16          # «Итоги дня» после 19:00 по Москве
+DIGEST_MIN_POSTS = 3          # меньше трёх постов за день: итоги не нужны
+DIGEST_MAX_LINES = 8
+WEEK_HOUR_UTC = 15            # «Мета недели» по воскресеньям после 18:00 по Москве
+WEEK_MIN_DAYS = 3             # нужно минимум столько дней данных меты
+HIST_KEEP_DAYS = 14
+POSTED_KEEP_DAYS = 3
 # Время и повторы
 TIME_BUDGET = 300             # через сколько секунд запуск перестаёт брать новую работу
 MAX_SEND_ERRORS_PER_RUN = 6   # столько ошибок отправки подряд, и запуск останавливается
@@ -835,13 +843,43 @@ def _fatal_check(ex):
             "добавлен администратором канала с правом публикации.")
 
 
+LAST_MSG = {"id": None}  # id последнего сообщения в канал: нужен для ссылок в итогах дня и в оглавлении
+
+
+def _grab_msg_id(raw, chat_id):
+    try:
+        res = json.loads(raw).get("result")
+        if isinstance(res, dict) and res.get("message_id") and str(chat_id) == str(CHAT):
+            LAST_MSG["id"] = res["message_id"]
+    except Exception:
+        pass
+
+
+def msg_link(mid):
+    """Ссылка на сообщение канала (публичный @канал или приватный -100...). Пустая строка, если ссылку не собрать."""
+    c = (CHAT or "").strip()
+    if not mid:
+        return ""
+    if c.startswith("@"):
+        return f"https://t.me/{c[1:]}/{mid}"
+    if c.startswith("-100"):
+        return f"https://t.me/c/{c[4:]}/{mid}"
+    return ""
+
+
+def _quiet(silent):
+    return {"disable_notification": True} if silent else {}
+
+
 def tg_json(method, payload):
     req = urllib.request.Request(
         f"{TG_API}/bot{TOKEN}/{method}",
         data=json.dumps(payload).encode(),
         headers={"Content-Type": "application/json"})
     try:
-        return urllib.request.urlopen(req, timeout=30).read()
+        raw = urllib.request.urlopen(req, timeout=30).read()
+        _grab_msg_id(raw, payload.get("chat_id"))
+        return raw
     except urllib.error.HTTPError as ex:
         _fatal_check(ex)
         raise
@@ -850,10 +888,11 @@ def tg_json(method, payload):
 _MIME = {"jpeg": "image/jpeg", "png": "image/png", "webp": "image/webp"}
 
 
-def tg_upload(photo, caption, fmt="jpeg", parse_mode="HTML"):
+def tg_upload(photo, caption, fmt="jpeg", parse_mode="HTML", silent=False):
     b = uuid.uuid4().hex
     body = io.BytesIO()
-    fields = [("chat_id", CHAT), ("caption", caption)] + ([("parse_mode", parse_mode)] if parse_mode else [])
+    fields = ([("chat_id", CHAT), ("caption", caption)] + ([("parse_mode", parse_mode)] if parse_mode else [])
+              + ([("disable_notification", "true")] if silent else []))
     for name, val in fields:
         body.write(f'--{b}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{val}\r\n'.encode())
     ext = "jpg" if fmt == "jpeg" else fmt
@@ -865,7 +904,9 @@ def tg_upload(photo, caption, fmt="jpeg", parse_mode="HTML"):
         f"{TG_API}/bot{TOKEN}/sendPhoto", data=body.getvalue(),
         headers={"Content-Type": f"multipart/form-data; boundary={b}"})
     try:
-        return urllib.request.urlopen(req, timeout=60).read()
+        raw = urllib.request.urlopen(req, timeout=60).read()
+        _grab_msg_id(raw, CHAT)
+        return raw
     except urllib.error.HTTPError as ex:
         _fatal_check(ex)
         raise
@@ -1446,6 +1487,8 @@ def send(item, important, phrase=""):
     else:
         title = item["title"] if item.get("title_ru") else translate(item["title"])
         text = translate(item.get("text", ""))
+    item["_sent_title"] = title
+    silent = SILENT_REGULAR and not important
     post = build_post(item, title, text, important, phrase)
     img = load_image(item, important)
     note = item.get("_img_note", "")
@@ -1455,7 +1498,8 @@ def send(item, important, phrase=""):
         url = next((u for u in (item.get("imgs") or [item.get("img")]) if u), "")
         if url:
             try:
-                tg_json("sendPhoto", {"chat_id": CHAT, "photo": upgrade_image_url(url), "caption": post, "parse_mode": "HTML"})
+                tg_json("sendPhoto", {"chat_id": CHAT, "photo": upgrade_image_url(url), "caption": post, "parse_mode": "HTML",
+                                         **_quiet(silent)})
                 print("  картинку скачал сам Telegram")
                 return
             except FatalError:
@@ -1485,7 +1529,7 @@ def send(item, important, phrase=""):
         err = ""
         for mode, caption in (("HTML", post), (None, strip_html(post))):
             try:
-                tg_upload(data, caption, fmt, mode)
+                tg_upload(data, caption, fmt, mode, silent)
                 return
             except FatalError:
                 raise
@@ -1503,7 +1547,7 @@ def send(item, important, phrase=""):
         if not text_only_ok:
             raise RuntimeError("Telegram не принял картинку: " + err)
     try:
-        tg_json("sendMessage", {"chat_id": CHAT, "text": post, "parse_mode": "HTML"})
+        tg_json("sendMessage", {"chat_id": CHAT, "text": post, "parse_mode": "HTML", **_quiet(silent)})
     except urllib.error.HTTPError as ex:
         if ex.code in (429, 401, 403):
             raise
@@ -1511,7 +1555,7 @@ def send(item, important, phrase=""):
         print("  Telegram не принял текст:", err)
         if "parse entities" not in err:
             raise
-        tg_json("sendMessage", {"chat_id": CHAT, "text": strip_html(post)})
+        tg_json("sendMessage", {"chat_id": CHAT, "text": strip_html(post), **_quiet(silent)})
 
 
 # ---------- разбор баланса из заметок об обновлении ----------
@@ -1640,6 +1684,7 @@ def build_balance_post(item, entries, limit=3900):
     foot = f"\n\n🔗 {item['link']}\n\n#BrawlStars #баланс" if item.get("link") else "\n\n#BrawlStars #баланс"
     summary = f"\n\nЗатронуто бойцов: {len({r['name'] for r in rows})}" + \
         (f" · баффы: {n_buff}" if n_buff else "") + (f" · нерфы: {n_nerf}" if n_nerf else "")
+    summary += balance_takeaway(rows)
     parts, used = [], len(head) + len(foot) + len(summary)
     skipped = 0
     for kind, label in (("buff", "📈 <b>Бафф</b>"), ("nerf", "📉 <b>Нерф</b>"), ("", "🔧 <b>Изменения</b>")):
@@ -1666,7 +1711,31 @@ def build_balance_post(item, entries, limit=3900):
     return head + summary + "\n\n" + "\n\n".join(parts) + extra + foot
 
 
-def post_balance_digest(item):
+def balance_lists(rows):
+    """Имена усиленных и ослабленных бойцов (без повторов, в порядке появления)."""
+    def names(kind):
+        out = []
+        for r in rows:
+            if r.get("kind") == kind and r["name"] not in out:
+                out.append(r["name"])
+        return out
+    return names("buff"), names("nerf")
+
+
+def balance_takeaway(rows):
+    """Строка «Что это значит». Осторожные формулировки: это ожидание, а не факт."""
+    buffs, nerfs = balance_lists(rows)
+    parts = []
+    if buffs:
+        parts.append(f"усиленных бойцов ({', '.join(buffs[:4])}) скорее всего начнут брать чаще")
+    if nerfs:
+        parts.append(f"ослабленных ({', '.join(nerfs[:4])}) скорее всего реже")
+    if not parts:
+        return ""
+    return "\n\n💡 <b>Что это значит:</b> " + html.escape("; ".join(parts)) + ". Как изменится выбор лучших игроков, покажем в ближайшей мете."
+
+
+def post_balance_digest(item, state=None):
     page = item.get("_page")
     if not page:
         return False
@@ -1676,8 +1745,17 @@ def post_balance_digest(item):
     text = build_balance_post(item, entries)
     if not text:
         return False
+    LAST_MSG["id"] = None
     tg_json("sendMessage", {"chat_id": CHAT, "text": text, "parse_mode": "HTML",
                             "disable_web_page_preview": True})
+    if state is not None:  # данные для ролика «Баланс»: ролик собирается автоматически вскоре после публикации
+        try:
+            buffs, nerfs = balance_lists(entries)
+            state["balance_last"] = {"date": datetime.date.today().isoformat(), "title": item.get("title", ""),
+                                     "link": item.get("link", ""), "buffs": buffs[:8], "nerfs": nerfs[:8],
+                                     "id": LAST_MSG["id"]}
+        except Exception as ex:
+            print("  данные баланса для ролика не сохранены:", ex)
     return True
 
 
@@ -2013,6 +2091,13 @@ def maybe_post_meta(state, started, force=False):
     state["meta"] = {"date": today, "stats": agg["stats"], "battles": agg["battles"],
                      "bm": {n: {m: v for m, v in per.items()} for n, per in meta_by_mode(agg).items()}}
     state["meta_posted"] = today
+    try:  # история по дням: из неё собирается «Мета недели»
+        hist = state.setdefault("meta_hist", {})
+        hist[today] = {n: [pk, w] for n, (pk, w) in agg["stats"].items() if pk >= META_MIN_PICKS}
+        for old in sorted(hist)[:-HIST_KEEP_DAYS]:
+            hist.pop(old, None)
+    except Exception as ex:
+        print("мета: история дня не сохранилась:", ex)
     count_post(state, "meta")
     print(f"мета опубликована: {agg['battles']} боёв, {ok} журналов")
     return True
@@ -2480,9 +2565,12 @@ def maybe_post_guide(state, started, force=False):
         card = make_guide_card(info["name"], info["cls_ru"], portrait, info["short_stat"])
     except Exception as ex:
         print("гайд: карточка не нарисовалась:", ex)
+    first_id = None
     if card:
         try:
+            LAST_MSG["id"] = None
             tg_upload(card, build_guide_caption(info), "jpeg")
+            first_id = LAST_MSG["id"]
             print("гайд: карточка отправлена")
             time.sleep(PAUSE)
         except FatalError:
@@ -2491,8 +2579,15 @@ def maybe_post_guide(state, started, force=False):
             print("гайд: карточка не отправилась, пойдёт только текст:", ex)
     else:
         print("гайд: без карточки.", cards_status())
+    LAST_MSG["id"] = None
     tg_json("sendMessage", {"chat_id": CHAT, "text": text, "parse_mode": "HTML",
                             "disable_web_page_preview": True})
+    try:
+        update_toc(state, info["name"], first_id or LAST_MSG["id"])
+    except FatalError:
+        raise
+    except Exception as ex:
+        print("гайд: оглавление не обновилось:", ex)
     state.setdefault("guided", {})[b["name"].upper()] = today
     state["guide_posted"] = today
     count_post(state, "guide")
@@ -2597,10 +2692,18 @@ def maybe_post_poll(state, started, force=False):
             return False
         if daily.get("polls", 0) >= DAILY_POLL_LIMIT:
             return False
-    question, options = poll_for_today(state, today)
-    tg_json("sendPoll", {"chat_id": CHAT, "question": question[:300],
-                         "options": [{"text": o[:100]} for o in options][:10],  # формат InputPollOption из актуального Bot API
-                         "is_anonymous": True})
+    quiz = quiz_for_today(state, today)
+    if quiz:  # раз в три дня вместо опроса викторина с правильным ответом: на неё отвечают охотнее
+        question = quiz["question"]
+        tg_json("sendPoll", {"chat_id": CHAT, "question": question[:300], "type": "quiz",
+                             "options": [{"text": o[:100]} for o in quiz["options"]],
+                             "correct_option_id": quiz["correct"], "explanation": quiz["explanation"][:200],
+                             "is_anonymous": True})
+    else:
+        question, options = poll_for_today(state, today)
+        tg_json("sendPoll", {"chat_id": CHAT, "question": question[:300],
+                             "options": [{"text": o[:100]} for o in options][:10],  # формат InputPollOption из актуального Bot API
+                             "is_anonymous": True})
     state["poll_posted"] = today
     count_post(state, "poll")
     print("опрос опубликован:", question)
@@ -2647,10 +2750,256 @@ def save_state(state):
         state["guided"] = dict(keep)
     cutoff = time.time() - RECENT_DAYS * 86400
     state["recent"] = [r for r in state["recent"] if r.get("ts", 0) > cutoff][-RECENT_KEEP:]
+    keep_from = (datetime.date.today() - datetime.timedelta(days=POSTED_KEEP_DAYS)).isoformat()
+    state["posted"] = [p for p in state.get("posted", []) if p.get("d", "") >= keep_from][-150:]
     tmp = STATE_FILE + ".tmp"
     with open(tmp, "w") as f:
         json.dump(state, f, ensure_ascii=False)
     os.replace(tmp, STATE_FILE)  # файл не повредится, даже если запуск оборвётся
+
+
+# ---------- журнал постов, итоги дня, мета недели, оглавление, викторина, новый боец ----------
+MONTHS_RU = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября",
+             "декабря"]
+
+
+def date_ru(iso):
+    d = datetime.date.fromisoformat(iso)
+    return f"{d.day} {MONTHS_RU[d.month - 1]}"
+
+
+def log_post(state, item, important, mid, today):
+    """Запоминает опубликованный пост (заголовок и id) для «Итогов дня». Сбой журнала не мешает публикации."""
+    try:
+        try:
+            emoji = item_topic(item, important)[0]
+        except Exception:
+            emoji = ""
+        title = shorten(item.get("_sent_title") or item.get("title", ""), 90)
+        state.setdefault("posted", []).append({"d": today, "id": mid, "t": title, "imp": bool(important), "e": emoji})
+    except Exception as ex:
+        print("  журнал постов не обновился:", ex)
+
+
+def build_digest(state, today, limit=3900):
+    """«Итоги дня»: важное первым, ссылки на посты, мета, гайд и баланс дня. Пусто, если постов мало."""
+    esc = html.escape
+    posts = [p for p in state.get("posted", []) if p.get("d") == today and p.get("id") and p.get("t")]
+    posts.sort(key=lambda p: (not p.get("imp"), -p["id"]))
+    uniq, titles = [], set()
+    for p in posts:
+        k = p["t"].lower()
+        if k not in titles:
+            titles.add(k)
+            uniq.append(p)
+    if len(uniq) < DIGEST_MIN_POSTS:
+        return ""
+    head = f"🗓 <b>Итоги дня · {date_ru(today)}</b>"
+    tail = []
+    meta = state.get("meta") or {}
+    if meta.get("date") == today:
+        rows = rank_rows(meta.get("stats") or {}, META_MIN_PICKS)[:3]
+        if rows:
+            tail.append("📊 Мета дня: " + ", ".join(esc(r[0]) for r in rows))
+    names = [n for n, d in (state.get("guided") or {}).items() if d == today]
+    if names:
+        tail.append("📘 Гайд дня: " + esc(nice_name(names[0])))
+    if (state.get("balance_last") or {}).get("date") == today:
+        tail.append("⚖️ Разбор баланса обновления")
+    foot = "\n".join(tail) + ("\n\n" if tail else "") + "#BrawlStars #итоги"
+    lines, used = [], len(head) + len(foot) + 40
+    for p in uniq[:DIGEST_MAX_LINES]:
+        link = msg_link(p["id"])
+        mark = ("🔥 " if p.get("imp") else "") + ((p.get("e") + " ") if p.get("e") else "")
+        title = esc(p["t"])
+        line = f"• {mark}" + (f'<a href="{esc(link, quote=True)}">{title}</a>' if link else title)
+        if used + len(line) > limit:
+            break
+        used += len(line) + 1
+        lines.append(line)
+    if not lines:
+        return ""
+    return head + "\n\nЧто было в канале сегодня:\n" + "\n".join(lines) + "\n\n" + foot
+
+
+def maybe_post_digest(state, started, force=False):
+    now = datetime.datetime.now(datetime.timezone.utc)
+    today = now.strftime("%Y-%m-%d")
+    if not force and (state.get("digest_posted") == today or now.hour < DIGEST_HOUR_UTC or in_quiet_hours(now)):
+        return False
+    text = build_digest(state, today)
+    if not text:
+        return False
+    tg_json("sendMessage", {"chat_id": CHAT, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True,
+                            **_quiet(True)})
+    state["digest_posted"] = today
+    count_post(state, "digest")
+    print("итоги дня опубликованы")
+    return True
+
+
+def week_key(today):
+    y, w, _ = datetime.date.fromisoformat(today).isocalendar()
+    return f"{y}-W{w:02d}"
+
+
+def weekly_rows(state, today, days=7, top=5):
+    """Топ недели из истории меты: бои и победы суммируются по дням, рейтинг тот же, что у дневной меты.
+    Возвращает ([(имя, винрейт, бои, дней_в_рейтинге)], сколько_дней_данных)."""
+    hist = state.get("meta_hist") or {}
+    d0 = datetime.date.fromisoformat(today)
+    used = {}
+    for k, v in hist.items():
+        try:
+            if 0 <= (d0 - datetime.date.fromisoformat(k)).days < days:
+                used[k] = v
+        except Exception:
+            continue
+    if len(used) < WEEK_MIN_DAYS:
+        return [], len(used)
+    agg, appear = {}, Counter()
+    for st in used.values():
+        for n, (pk, w) in st.items():
+            a = agg.setdefault(n, [0, 0])
+            a[0] += pk
+            a[1] += w
+            appear[nice_name(n)] += 1
+    rows = rank_rows({n: (a[0], a[1]) for n, a in agg.items()}, META_MIN_PICKS * 2)
+    out = [(r[0], r[3], r[1], appear[r[0]]) for r in rows if appear[r[0]] >= 2][:top]
+    return out, len(used)
+
+
+def build_week_post(rows, ndays):
+    esc = html.escape
+    lines = [f"{i}. <b>{esc(n)}</b> · {pct(wr)} побед · в рейтинге дней: {d}" for i, (n, wr, pk, d) in enumerate(rows, 1)]
+    return ("🏆 <b>МЕТА НЕДЕЛИ</b> · топ-игроки мира\n"
+            f"<i>Данные за {ndays} дн.; рейтинг учитывает число боёв</i>\n\n" + "\n".join(lines) +
+            "\n\nКого бы вы взяли в команду на этой неделе? Пишите в комментариях.\n\n#BrawlStars #мета #неделя")
+
+
+def maybe_post_week(state, started, force=False):
+    """По воскресеньям публикует «Мету недели» и закрепляет пост (если у бота есть право закреплять)."""
+    now = datetime.datetime.now(datetime.timezone.utc)
+    today = now.strftime("%Y-%m-%d")
+    key = week_key(today)
+    if not force and (now.weekday() != 6 or now.hour < WEEK_HOUR_UTC or in_quiet_hours(now)
+                      or state.get("week_posted") == key):
+        return False
+    rows, ndays = weekly_rows(state, today)
+    if len(rows) < 3:
+        return False
+    LAST_MSG["id"] = None
+    tg_json("sendMessage", {"chat_id": CHAT, "text": build_week_post(rows, ndays), "parse_mode": "HTML",
+                            "disable_web_page_preview": True})
+    mid = LAST_MSG["id"]
+    if mid:
+        try:
+            tg_json("pinChatMessage", {"chat_id": CHAT, "message_id": mid, "disable_notification": True})
+        except FatalError:
+            raise
+        except Exception as ex:
+            print("мета недели: не удалось закрепить (у бота нет права закреплять сообщения?):", ex)
+    state["week_posted"] = key
+    state["week_last"] = {"key": key, "date": today, "ndays": ndays, "rows": [list(r) for r in rows]}
+    count_post(state, "week")
+    print("мета недели опубликована")
+    return True
+
+
+TOC_NAV = "Навигация по хештегам: #мета · #гайд · #баланс · #итоги · #неделя"
+
+
+def build_toc(items):
+    esc = html.escape
+    lines = [f'• <a href="{esc(i["url"], quote=True)}">{esc(i["name"])}</a>' for i in sorted(items, key=lambda i: i["name"].lower())]
+    return "📚 <b>Оглавление гайдов</b>\n\n" + "\n".join(lines) + "\n\n" + TOC_NAV
+
+
+def update_toc(state, name, mid):
+    """Ведёт закреплённое оглавление: каждый новый гайд добавляется ссылкой, одно и то же сообщение редактируется."""
+    link = msg_link(mid)
+    if not link:
+        return False
+    toc = state.setdefault("toc", {"msg": None, "items": []})
+    toc["items"] = [i for i in toc["items"] if i["name"].upper() != name.upper()] + [{"name": name, "url": link}]
+    toc["items"] = toc["items"][-80:]
+    text = build_toc(toc["items"])
+    payload = {"chat_id": CHAT, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}
+    if toc.get("msg"):
+        try:
+            tg_json("editMessageText", {**payload, "message_id": toc["msg"]})
+            return True
+        except urllib.error.HTTPError as ex:
+            err = http_err_text(ex)
+            if "not modified" in err:
+                return True
+            if ex.code in (429,):
+                raise
+            print("оглавление: сообщение не отредактировалось, создам заново:", err)
+            toc["msg"] = None
+    LAST_MSG["id"] = None
+    tg_json("sendMessage", {**payload, **_quiet(True)})
+    toc["msg"] = LAST_MSG["id"]
+    if toc["msg"]:
+        try:
+            tg_json("pinChatMessage", {"chat_id": CHAT, "message_id": toc["msg"], "disable_notification": True})
+        except FatalError:
+            raise
+        except Exception as ex:
+            print("оглавление: не удалось закрепить:", ex)
+    return True
+
+
+def quiz_for_today(state, today):
+    """Раз в три дня викторина «К какому классу относится боец?» с ответом из данных Brawlify. Без данных: None."""
+    cmap = (state.get("classes") or {}).get("map") or {}
+    day = datetime.date.fromisoformat(today).toordinal()
+    if day % 3 != 0 or not cmap:
+        return None
+    meta = state.get("meta") or {}
+    names = [r[0] for r in (bot_rank(meta) if meta.get("date") == today else [])[:15]]
+    pool = [n for n in names if cmap.get(n.upper()) in CLASSES_RU] or [n.title() for n, c in cmap.items() if c in CLASSES_RU]
+    if not pool:
+        return None
+    rnd = random.Random(day)
+    who = rnd.choice(sorted(pool))
+    right = CLASSES_RU[cmap[who.upper()]]
+    others = [v for v in CLASSES_RU.values() if v != right]
+    options = rnd.sample(others, 3) + [right]
+    rnd.shuffle(options)
+    return {"question": f"К какому классу относится {nice_name(who)}?", "options": options,
+            "correct": options.index(right), "explanation": f"{nice_name(who)}: {right}."[:200]}
+
+
+def check_new_brawlers(state, force=False):
+    """Раз в час сверяет список бойцов в официальном API. Новый боец сохраняется для ролика (первый запуск лишь запоминает список)."""
+    if not BS_KEY:
+        return False
+    if not force and time.time() - state.get("brawlers_check", 0) < 3600:
+        return False
+    state["brawlers_check"] = time.time()
+    items = [b for b in (bs_api("/brawlers").get("items") or []) if isinstance(b, dict) and b.get("name")]
+    if len(items) < 20:
+        print("новые бойцы: ответ API подозрительно короткий, пропускаю")
+        return False
+    names = {b["name"]: b for b in items}
+    known = state.get("known_brawlers")
+    state["known_brawlers"] = sorted(names)
+    if known is None:
+        return False  # первый запуск: только запоминаем текущий список
+    new = [n for n in names if n not in set(known)]
+    if not new:
+        return False
+    b = names[new[0]]
+    ab = lambda key: [x.get("name", "") for x in (b.get(key) or []) if isinstance(x, dict) and x.get("name")]
+    state["new_brawler"] = {"name": nice_name(b["name"]), "date": datetime.date.today().isoformat(),
+                            "gadgets": ab("gadgets"), "stars": ab("starPowers"), "hypers": ab("hyperCharges")}
+    print("новый боец в API:", state["new_brawler"]["name"])
+    try:
+        notify_admin(f"🆕 В API появился новый боец: {state['new_brawler']['name']}. Ролик соберётся автоматически.")
+    except Exception:
+        pass
+    return True
 
 
 def main():
@@ -2797,7 +3146,9 @@ def main():
             if ru:
                 it["_ru"] = ru
             phrase = (ru or {}).get("phrase") or pick_phrase(it, state["phrases"], important)
+            LAST_MSG["id"] = None
             send(it, important, phrase)
+            log_post(state, it, important, LAST_MSG["id"], today)
         except FatalError as ex:
             print("ОШИБКА:", ex)
             save_state(state)
@@ -2837,7 +3188,7 @@ def main():
         time.sleep(PAUSE)
         if it.get("_page"):  # к заметкам об обновлении добавляем разбор баланса
             try:
-                if post_balance_digest(it):
+                if post_balance_digest(it, state):
                     print("  разбор баланса опубликован")
                     count_post(state, "balance")
                     time.sleep(PAUSE)
@@ -2859,6 +3210,9 @@ def main():
                                                               if k != "новых записей") if len(stats) > 1 else ""))
     for job in (lambda: maybe_post_meta(state, started, force=FORCE_META),
                 lambda: maybe_post_guide(state, started, force=FORCE_GUIDE),
+                lambda: check_new_brawlers(state),
+                lambda: maybe_post_week(state, started),
+                lambda: maybe_post_digest(state, started),
                 lambda: maybe_post_poll(state, started)):
         try:
             job()
