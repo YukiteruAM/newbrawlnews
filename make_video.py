@@ -1237,17 +1237,21 @@ def L_title(title, subtitle="", accent=PURPLE):
     return layer
 
 
-def L_hero(name, chip1="", chip2="", portrait=None, rank=None, silhouette=False):
+def _mosaic(im, n):
+    """Мозаика n блоков по ширине: цвета и форма остаются, детали пропадают (викторина «Угадай бойца»)."""
+    small = im.resize((n, max(1, round(n * im.height / im.width))), bot.Image.BOX)
+    return small.resize(im.size, bot.Image.NEAREST)
+
+
+def L_hero(name, chip1="", chip2="", portrait=None, rank=None, pixelate=0):
     layer = new_layer()
     d = bot.ImageDraw.Draw(layer)
     if portrait:
         try:
-            pm = _prep_portrait(bot._portrait(portrait, 560))
-            if silhouette:  # викторина «Угадай по силуэту»: портрет заливается тёмным цветом
-                sil = bot.Image.new("RGBA", pm.size, (18, 8, 44, 255))
-                sil.putalpha(pm.getchannel("A"))
-                pm = sil
-            pm = _sticker(pm, 16, 8)
+            raw = bot._portrait(portrait, 560)
+            if pixelate:  # мозаика вместо силуэта: у портретов фон непрозрачный, и силуэт превращался в чёрный круг
+                raw = _mosaic(raw.convert("RGBA"), pixelate)
+            pm = _sticker(_prep_portrait(raw), 16, 8)
             sh = bot.Image.new("RGBA", (W, H), (0, 0, 0, 0))
             bot.ImageDraw.Draw(sh).ellipse((W // 2 - 260, 640, W // 2 + 260, 720), fill=(0, 0, 0, 120))
             layer.alpha_composite(sh.filter(bot.ImageFilter.GaussianBlur(14)))
@@ -2178,7 +2182,8 @@ def script_week(wl):
 
 
 def script_quiz(state):
-    """Рубрика «Угадай бойца по силуэту»: класс из данных Brawlify подсказка, ответ показывается после отсчёта."""
+    """Рубрика «Угадай бойца по пикселям»: портрет проясняется по этапам (крупная мозаика, мельче, затем ответ).
+    Подсказка: класс из данных Brawlify. Диктор в этом ролике без портрета, чтобы не выдать ответ."""
     cmap = (state.get("classes") or {}).get("map") or {}
     pool = sorted(n for n, c in cmap.items() if c in bot.CLASSES_RU)
     if not pool:
@@ -2189,16 +2194,17 @@ def script_quiz(state):
     if not por:
         print("викторина: нет портрета бойца, ролик пропускаю")
         return None
-    specs = [{"layer": L_title("Угадай бойца!", "по силуэту"), "kind": "title", "priority": 10, "accent": PINK,
-              "speech": "Угадай бойца по силуэту! Время пошло.", "caption": "Угадай бойца"},
-             {"layer": L_hero("?????", f"класс: {cls}", "", por, None, silhouette=True), "kind": "hero", "priority": 10,
-              "accent": PURPLE, "speech": f"Подсказка: он из класса {cls}. Пиши ответ в комментариях!", "caption": "Кто это?"}]
-    specs += text_specs("Ответ через", "Три... Два... Один...", YELLOW, 10)
-    specs += [{"layer": L_hero(name, cls, "", por), "kind": "hero", "priority": 10, "accent": ORANGE, "sfx": "ding",
-               "speech": f"Это {name}! Угадал?", "caption": f"Это {name}!"},
-              cta_spec("Угадал? Пиши ответ!")]
+    specs = [{"layer": L_title("Угадай бойца!", "по пикселям"), "kind": "title", "priority": 10, "accent": PINK,
+              "speech": "Угадай бойца по пикселям! Время пошло.", "caption": "Угадай бойца"},
+             {"layer": L_hero("?????", f"класс: {cls}", "", por, None, pixelate=9), "kind": "hero", "priority": 10,
+              "accent": PURPLE, "speech": f"Подсказка: он из класса {cls}. Пиши ответ в комментариях!", "caption": "Кто это?"},
+             {"layer": L_hero("?????", "становится яснее", "", por, None, pixelate=20), "kind": "hero", "priority": 10,
+              "accent": BLUE, "speech": "Три... Два... Один...", "caption": "Ну что, узнал?"},
+             {"layer": L_hero(name, cls, "", por), "kind": "hero", "priority": 10, "accent": ORANGE, "sfx": "ding",
+              "speech": f"Это {name}! Угадал?", "caption": f"Это {name}!"},
+             cta_spec("Угадал? Пиши ответ!")]
     return {"kind": "quiz", "specs": specs, "host": None,
-            "caption": "🎯 Угадай бойца Brawl Stars по силуэту! Ответ в конце ролика. Угадали?"}
+            "caption": "🎯 Угадай бойца Brawl Stars по пикселям! Ответ в конце ролика. Угадали?"}
 
 
 def script_guide(b, state):
