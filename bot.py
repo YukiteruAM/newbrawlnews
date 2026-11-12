@@ -2446,6 +2446,7 @@ def guide_info(b, state):
     for kind, lst in (("g", gadgets), ("s", stars), ("h", hypers)):
         for i, (n, d) in enumerate(lst):
             jobs[f"{kind}{i}"] = (d, 130)
+            jobs[f"{kind}n{i}"] = (n, 40)  # название способности тоже переводим: английское голос читал «по-русски» и коверкал
     with ThreadPoolExecutor(max_workers=6) as pool:
         done = dict(zip(jobs, pool.map(lambda v: _tr(*v), jobs.values())))
     meta = state.get("meta") or {}
@@ -2460,11 +2461,24 @@ def guide_info(b, state):
         stat_line = f"По боям топ-игроков за сутки: {pct(wr)} побед, пикрейт {pct(pr)}."
         if modes:
             stat_line += " Лучше всего: " + ", ".join(mode_name(m) for m, v in modes) + "."
+    def names(kind, lst):
+        """(названия для поста «Пауки (Spiders)», чисто русские названия для ролика)."""
+        post, ru = [], []
+        for i, (n, d) in enumerate(lst):
+            r = (done.get(f"{kind}n{i}") or "").strip()
+            r = r[:1].upper() + r[1:]
+            ru.append(r or n)
+            post.append(f"{r} ({n})" if r and r.lower() != n.lower() else n)
+        return post, ru
+    g_post, g_ru = names("g", gadgets)
+    s_post, s_ru = names("s", stars)
+    h_post, h_ru = names("h", hypers)
     return {
         "name": name, "cls": cls, "cls_ru": CLASS_ONE_RU.get(cls, ""), "desc": done["desc"],
-        "gadgets": [(n, done[f"g{i}"]) for i, (n, d) in enumerate(gadgets)],
-        "stars": [(n, done[f"s{i}"]) for i, (n, d) in enumerate(stars)],
-        "hypers": [(n, done[f"h{i}"]) for i, (n, d) in enumerate(hypers)],
+        "gadgets": [(g_post[i], done[f"g{i}"]) for i in range(len(gadgets))],
+        "stars": [(s_post[i], done[f"s{i}"]) for i in range(len(stars))],
+        "hypers": [(h_post[i], done[f"h{i}"]) for i in range(len(hypers))],
+        "gadgets_ru": g_ru, "stars_ru": s_ru, "hypers_ru": h_ru,
         "stat_line": stat_line, "short_stat": short_stat, "tip": CLASS_TIPS.get(cls, ""),
     }
 
