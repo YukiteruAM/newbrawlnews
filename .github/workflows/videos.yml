@@ -50,6 +50,7 @@ jobs:
           VIDEO_FPS: ${{ vars.VIDEO_FPS }}
           VIDEO_CRF: ${{ vars.VIDEO_CRF }}
           VIDEO_PRESET: ${{ vars.VIDEO_PRESET }}
+          VIDEO_FX: ${{ vars.VIDEO_FX }}
           SEND_ORIGINAL: ${{ vars.SEND_ORIGINAL }}
           POST_VIDEO_TO_CHANNEL: ${{ vars.POST_VIDEO_TO_CHANNEL }}
           VIDEO_CTA_HANDLE: ${{ vars.VIDEO_CTA_HANDLE }}
