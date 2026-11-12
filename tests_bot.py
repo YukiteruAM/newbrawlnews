@@ -284,6 +284,27 @@ def run():
     check("баланс: данные для ролика сохраняются", okb and bl.get("buffs") == ["Mortis", "Crow"] and bl.get("nerfs") == ["Edgar"]
           and bl.get("date") == datetime.date.today().isoformat() and bl.get("id"))
 
+    # ---- гайд: русские названия способностей (английские голос читал неправильно)
+    b = {"name": "CHARLIE", "class": {"name": "Controller"}, "description": "Some lore text",
+         "gadgets": [{"name": "Spiders", "description": "Releases spiders"}],
+         "starPowers": [{"name": "Digestive", "description": "Enemies slowed"}],
+         "hyperCharges": []}
+    ru = {"Spiders": "пауки", "Digestive": "Digestive", "Releases spiders": "Выпускает пауков", "Enemies slowed": "Враги замедлены",
+          "Some lore text": "Какой-то текст"}
+    real_tr = bot.translate
+    bot.translate = lambda t, mask_quotes=False: ru.get(t, t)
+    try:
+        info = bot.guide_info(b, {})
+        bot.translate = lambda t, mask_quotes=False: (_ for _ in ()).throw(ValueError("нет сети"))
+        info2 = bot.guide_info(b, {})
+    finally:
+        bot.translate = real_tr
+    check("гайд: в посте «Пауки (Spiders)», для ролика только «Пауки»",
+          info["gadgets"][0][0] == "Пауки (Spiders)" and info["gadgets_ru"] == ["Пауки"], str(info["gadgets"]) + str(info["gadgets_ru"]))
+    check("гайд: если перевод совпал с оригиналом, дубль не добавляется", info["stars"][0][0] == "Digestive")
+    check("гайд: без сети остаются исходные названия", info2["gadgets_ru"] == ["Spiders"] and info2["gadgets"][0][0] == "Spiders")
+    check("гайд: текст поста собирается с новыми названиями", "Пауки (Spiders)" in bot.build_guide_text(info))
+
     # ---- send(): обычные новости тихо, важные со звуком (по-настоящему вызываем send с подменой сети)
     rec = []
     real_up, real_li, real_tr, real_cp = bot.tg_upload, bot.load_image, bot.translate, bot.compose_post_image
