@@ -127,6 +127,87 @@ def t_fast():
     check("битрейт: короткий ролик получает больше, длинный меньше", mv.video_maxrate(30) > mv.video_maxrate(58) >= 2_500_000)
     check("битрейт: 58 с укладываются в лимит Telegram", mv.video_maxrate(58) * 58 / 8 + 160_000 * 58 / 8 <= mv.TG_LIMIT, str(mv.video_maxrate(58)))
     check("битрейт: потолок 16 Мбит/с", mv.video_maxrate(10) == 16_000_000)
+    # ---- объём кадра: пол, камера, свет, конфетти, 3D-влёт слов
+    from PIL import Image as _IM, ImageChops as _IC
+    base = _IM.new("RGB", (mv.W, mv.H), (80, 40, 160))
+    fl = base.copy()
+    mv.paste_floor(fl, mv.make_floor(0), 1.0)
+    fl2 = base.copy()
+    mv.paste_floor(fl2, mv.make_floor(0), 1.2)
+    check("пол: рисуется только ниже горизонта", fl.crop((0, 0, mv.W, mv.FLOOR_Y)).tobytes() == base.crop((0, 0, mv.W, mv.FLOOR_Y)).tobytes()
+          and fl.tobytes() != base.tobytes())
+    check("пол: движется навстречу зрителю (кадры разные)", fl.tobytes() != fl2.tobytes())
+    check("пол: у горизонта дымка (почти не виден), у зрителя заметен",
+          sum(abs(a - b) for a, b in zip(fl.getpixel((540, mv.FLOOR_Y + 3)), base.getpixel((540, 0)))) < 40
+          and sum(abs(a - b) for a, b in zip(fl.getpixel((300, mv.H - 20)), base.getpixel((300, 0)))) > 20)
+    white_ = _IM.new("RGB", (mv.W, mv.H), (255, 255, 255))
+    cams = [mv.camera(white_, g, k, 100, [1.0], g) for g, k in ((0.0, 0), (1.3, 50), (3.0, 99), (1.05, 40))]
+    check("камера: размер сохраняется и пустых краёв нет", all(c.size == white_.size and c.getpixel((0, 0)) == (255, 255, 255)
+                                                           and c.getpixel((mv.W - 1, mv.H - 1)) == (255, 255, 255) for c in cams))
+    gradient = _IM.linear_gradient("L").resize((mv.W, mv.H)).convert("RGB")
+    check("камера: к концу слайда ближе, чем в начале", mv.camera(gradient, 0, 0, 100, [], 9).tobytes() != mv.camera(gradient, 0, 99, 100, [], 9).tobytes())
+    check("камера: толчок на новой фразе", mv.camera(gradient, 1.0, 10, 100, [1.0], 1.02).tobytes() != mv.camera(gradient, 1.0, 10, 100, [], 1.02).tobytes())
+    spot = _IM.new("RGB", (mv.W, mv.H), (20, 20, 40))
+    spot.paste((255, 255, 255), (500, 900, 580, 980))
+    bl = mv.apply_bloom(spot)
+    check("свечение: вокруг яркого пятна светлее, вдали без изменений", bl.getpixel((540, 1010)) [0] > spot.getpixel((540, 1010))[0] + 3
+          and bl.getpixel((50, 50)) == spot.getpixel((50, 50)) and bl.size == spot.size)
+    vg = mv.get_vignette()
+    check("виньетка: центр ярче углов", vg.getpixel((mv.W // 2, mv.H // 2))[0] > vg.getpixel((5, 5))[0] + 40)
+    check("виньетка: пузырь слева почти не темнеет", vg.getpixel((420, 1100))[0] >= 235, str(vg.getpixel((420, 1100))))
+    cache = {}
+    b1 = mv.apply_bloom(spot, cache, True)
+    b2 = mv.apply_bloom(spot, cache, False)
+    check("свечение: кэш даёт тот же результат на неизменном кадре", b1.tobytes() == b2.tobytes() and "g" in cache)
+    cf = base.copy()
+    mv.confetti(cf, 540, 600, 0.3, 5)
+    cf_late = base.copy()
+    mv.confetti(cf_late, 540, 600, 1.5, 5)
+    check("конфетти: летит в течение 0,8 с и пропадает", cf.tobytes() != base.tobytes() and cf_late.tobytes() == base.tobytes())
+    kin3 = mv.build_kinetic([{"word": "Мортис"}, {"word": "сильный"}], [(0.0, 0.5), (0.5, 1.0)])
+    e1, e2 = base.copy(), base.copy()
+    mv.paste_kinetic(e1, kin3, 0.05)
+    mv.paste_kinetic(e2, kin3, 0.4)
+    check("слова влетают с наклоном и затем стоят ровно", e1.tobytes() != e2.tobytes())
+    # ---- произношение
+    say = {"Spider": "Спайдер", "Spiders": "Спайдерс", "Tiger": "Тайгер", "Mike": "Майк", "Digestive": "Дайджестив",
+           "River": "Ривер", "Bite": "Байт", "Hiding": "Хайдинг"}
+    check("английские слова читаются правильно (Spider, а не Спидер)", all(mv.eng_say(k) == v for k, v in say.items()),
+          str({k: mv.eng_say(k) for k in say}))
+    check("в тексте: «Spiders: Charlie»", mv.spoken("Spiders: Charlie выпускает") == "Спайдерс: Чарли выпускает")
+    check("имена, которых не было в словаре", mv.spoken("Clancy и Moe и Gigi") == "Клэнси и Мо и Джиджи")
+    cyr = lambda x: not re.search(r"[A-Za-z]", x)
+    check("все бойцы произносятся кириллицей", all(cyr(mv.spoken(n)) for n in bot.BRAWLERS))
+    check("правила не ломают имена", mv.eng_say("Mortis") == "Мортис" and mv.spoken("Edgar") == "Эдгар" and mv.eng_say("Spike") == "Спайк" and mv.eng_say("Piper") == "Пайпер")
+    check("темп спокойнее прежнего", mv._num(mv.TTS_RATE) <= 8 and mv.prosody("Привет!", first=True)[0] <= 8)
+    # ---- структура гайда
+    guide_info = {"name": "Charlie", "cls": "Controller", "cls_ru": "контроль", "short_stat": "83,8% побед",
+                  "desc": "Надела сумасшедшее шоу, опустила волосы всем своим тестом. Заполнила цирковую сплелась.",
+                  "gadgets": [("Пауки (Spiders)", "Чарли выпускает пауков, которые ищут и атакуют ближайших врагов")],
+                  "stars": [("Пищеварительный (Digestive)", "ZZ0ZZ мусор")],
+                  "hypers": [], "gadgets_ru": ["Пауки"], "stars_ru": ["Пищеварительный"], "hypers_ru": [],
+                  "tip": "Контролируйте зоны и замедление, чтобы навязывать бой.", "stat_line": ""}
+    real_gi, real_pt = mv.bot.guide_info, mv._portraits
+    mv.bot.guide_info = lambda b, st: guide_info
+    mv._portraits = lambda names: {}
+    try:
+        g = mv.script_guide({"name": "CHARLIE"}, {})
+    finally:
+        mv.bot.guide_info, mv._portraits = real_gi, real_pt
+    speeches = [x["speech"] for x in g["specs"]]
+    check("гайд: порядок — герой, совет, гаджет, звёздная сила, призыв",
+          [x["kind"] for x in g["specs"]] == ["hero", "kinetic", "kinetic", "kinetic", "cta"], str([x["kind"] for x in g["specs"]]))
+    check("гайд: в начале имя, класс и цифра, без «Это контроль»", speeches[0].startswith("Гайд на бойца Charlie! Класс: контроль.")
+          and "83,8%" in speeches[0] and "Это контроль" not in speeches[0], speeches[0])
+    check("гайд: бессмысленный перевод описания в ролик не попадает", all("сумасшедшее" not in sp and "цирковую" not in sp for sp in speeches))
+    check("гайд: названия способностей по-русски", "Пауки:" in speeches[2] and "Spiders" not in speeches[2])
+    check("гайд: испорченное описание не читается, остаётся название", speeches[3].strip() == "Звёздная сила. Пищеварительный.", speeches[3])
+    check("_sane отсеивает мусор", not mv._sane("") and not mv._sane("ZZ0ZZ текст") and not mv._sane("Spider Spider Spider text") and mv._sane("Атакует ближайших врагов"))
+    check("описание способности укорачивается до первого предложения", mv._trim_desc("Первое предложение. Второе предложение.") == "Первое предложение.")
+    long_d = "Чарли выпускает пауков, которые ищут и атакуют ближайших врагов на расстоянии и замедляют их на несколько секунд"
+    td = mv._trim_desc(long_d)
+    check("длинное описание режется по запятой/слову и оканчивается точкой", len(td) <= 97 and td.endswith(".") and long_d.startswith(td[:-1]), td)
+    check("призыв короче прежнего", all(len(x) < 90 for x in mv.CTA_SPEECHES), str([len(x) for x in mv.CTA_SPEECHES]))
     # ---- живой голос
     toks = "Гаджет. Быстрая стрелка: бьёт далеко, но медленно. Это важно! Правда? Да, правда, и вот почему так.".split(" ")
     segs = mv.split_segments(toks, 1)
@@ -213,6 +294,10 @@ def t_new():
     import datetime as _dt
     png = _fake_png()
     mv._portraits = lambda names: {n.upper(): png for n in names}
+    ru_map = {"Spiders": "Пауки", "Digestive": "Пищеварительный", "A": "Альфа", "B": "Бета", "C": "Цэ", "D": "Дэ", "E": "Эф"}
+    real_tr = mv.bot.translate
+    mv.bot.translate = lambda t, **k: ru_map.get(t, t)
+    mv._NAME_CACHE.clear()
     # ---- анимированный топ
     rows = [{"name": n, "value": v, "portrait": png if i % 2 == 0 else None}
             for i, (n, v) in enumerate((("Mortis", 0.583), ("Edgar", 0.561), ("Crow", 0.548), ("Leon", 0.531), ("Colt", 0.52)))]
@@ -248,6 +333,8 @@ def t_new():
     check("подпись для канала: в лимите Telegram и с уведомлением", len(cap) <= 1024 and "Supercell" in cap and "#BrawlStars" in cap, str(len(cap)))
     check("полная подпись содержит уведомление", "Fan Content Policy" in mv.full_caption("x"))
     # ---- сценарии
+    mv.bot.translate = real_tr
+    mv.bot.translate = lambda t, **k: ru_map.get(t, t)
     sb = mv.script_balance({"buffs": ["Mortis", "Crow"], "nerfs": ["Edgar"]})
     kinds = [x.get("kind") for x in sb["specs"]]
     check("баланс: заставка, усилили, ослабили, вывод, призыв", kinds[0] == "title" and kinds.count("kinetic") == 3 and kinds[-1] == "cta", str(kinds))
@@ -379,6 +466,7 @@ def t_render(kind="demo", with_music=False):
                 "gadgets": [("Боевая лопата", "Мортис лечится при каждом ударе и на пару секунд получает дополнительную скорость движения, пока не закончится заряд.")],
                 "stars": [("Жажда крови", "После убийства Мортис восстанавливает здоровье и сразу получает заряд суперспособности, поэтому цепочки убийств растут очень быстро.")],
                 "hypers": [("Вечная ночь", "Суперспособность работает дольше и наносит больше урона по всей области вокруг.")],
+                "gadgets_ru": ["Боевая лопата"], "stars_ru": ["Жажда крови"], "hypers_ru": ["Вечная ночь"],
                 "tip": "Убийцы живут на дерзости: заходи со стороны, где тебя не ждут, бей по самым хрупким и уходи до того, как враги опомнятся.",
                 "stat_line": ""}
         mv.bot.guide_info = lambda b, st: info
