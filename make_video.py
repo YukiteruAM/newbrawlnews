@@ -20,7 +20,7 @@ import bot
 W, H, FPS = 1080, 1920, int(os.environ.get("VIDEO_FPS") or 30)   # 30 к/с: родная частота TikTok, движение заметно плавнее
 VIDEO_STATE = "videos.json"
 VIDEO_DAILY_LIMIT = 4            # не больше четырёх роликов в сутки: так канал не выглядит спамом
-MAX_VIDEO_SEC = 58               # до минуты: длиннее ролики досматривают реже
+MAX_VIDEO_SEC = 50               # короткие ролики досматривают чаще: лишние блоки (гиперзаряд, «самый популярный») отбрасываются
 MIN_SLIDE_SEC = 1.6              # быстрый монтаж: кадры сменяются каждые 2-3 секунды
 CTA_MIN_SEC = 5.0                # финальный кадр с QR держим дольше, чтобы успели навести камеру
 PAD_SEC = 0.12                   # пауза после фразы
@@ -30,7 +30,7 @@ MUSIC_DIR = "music"              # сюда клади СВОИ треки ил�
 MUSIC_VOLUME, SFX_VOLUME = 0.12, 0.30
 MUSIC_LUFS = float(os.environ.get("MUSIC_LUFS") or -26)   # громкость фоновой музыки до приглушения голосом
 TTS_VOICE = os.environ.get("TTS_VOICE") or "ru-RU-DmitryNeural"
-TTS_RATE = os.environ.get("TTS_RATE") or "+12%"      # чуть бодрее обычного, но имена и цифры ещё разборчивы
+TTS_RATE = os.environ.get("TTS_RATE") or "+6%"       # темп чуть выше обычного: быстрее было непонятно, особенно в начале
 TTS_PITCH = os.environ.get("TTS_PITCH") or "+0Hz"
 TTS_STRESS = os.environ.get("TTS_STRESS", "")        # "acute": ставить знак ударения (проверяется командой voicetest)
 TTS_STYLE = os.environ.get("TTS_STYLE") or "lively"   # "lively": интонация по смыслу фраз; "plain": как раньше
@@ -258,6 +258,33 @@ NAME_SAY = {
     "Doug": "Даг", "Lumi": "Луми", "Najia": "Наджия", "Damian": "Дамиан", "Sirius": "Сириус", "Pierce": "Пирс",
     "Larry & Lawrie": "Ларри и Лори", "Starr Nova": "Старр Нова", "Mr. P": "Мистер Пи", "8-Bit": "Восемь бит",
 }
+NAME_SAY.update({"Clancy": "Клэнси", "Moe": "Мо", "Ruffs": "Раффс", "R-T": "Эр Ти", "Trunk": "Транк", "Gigi": "Джиджи",
+                 "Glowy": "Глоуи", "Meeple": "Мипл", "Jae-Yong": "Джэ Ён", "Kaze": "Кадзэ", "Ollie": "Олли", "Alli": "Алли",
+                 "Mico": "Мико", "Finx": "Финкс", "Bo": "Бо"})
+_ENG_EXC = {"spider": "спайдер", "spiders": "спайдерс", "digestive": "дайджестив", "tiger": "тайгер", "river": "ривер",
+            "mike": "майк", "time": "тайм", "fire": "файр", "super": "супер", "hyper": "хайпер", "gadget": "гаджет",
+            "mega": "мега", "robo": "робо", "bite": "байт", "like": "лайк", "line": "лайн", "nice": "найс", "ice": "айс",
+            "tank": "танк", "star": "стар", "power": "пауэр", "shield": "шилд", "speed": "спид", "heal": "хил",
+            "boost": "буст", "cube": "кьюб", "mine": "майн", "mines": "майнс", "pine": "пайн", "wild": "вайлд"}
+_ENG_RULES = [(r"ight", "айт"), (r"igh", "ай"), (r"tion$", "шн"), (r"sion$", "жн"), (r"ture$", "чер"), (r"^kn", "н"), (r"^wr", "р"),
+              (r"^wh", "в"), (r"oo", "у"), (r"ee", "и"),
+              (r"i([bcdfgklmnprstvz])e$", r"ай\1"), (r"a([bcdfgklmnprstvz])e$", r"эй\1"),
+              (r"o([bcdfgklmnprstvz])e$", r"оу\1"), (r"u([bcdfgklmnprstvz])e$", r"ю\1"),
+              (r"i([bcdfgklmnprstvz])(er|ers|ing|ings)$", r"ай\1\2")]
+
+
+def eng_say(word):
+    """Читаемая русскими буквами запись английского слова, которого нет в словарях: «Spider» -> «Спайдер», а не «Спидер»."""
+    w = word.lower()
+    if w in _ENG_EXC:
+        r = _ENG_EXC[w]
+    else:
+        for pat, sub in _ENG_RULES:
+            w = re.sub(pat, sub, w)
+        r = translit(w).lower()
+    return r[:1].upper() + r[1:] if word[:1].isupper() else r
+
+
 _LAT = [("sch", "щ"), ("sh", "ш"), ("ch", "ч"), ("th", "т"), ("ph", "ф"), ("ck", "к"), ("kh", "х"), ("zh", "ж"),
         ("ee", "и"), ("oo", "у"), ("ou", "ау"), ("ea", "и"), ("ie", "и"), ("qu", "кв"), ("a", "а"), ("b", "б"),
         ("c", "к"), ("d", "д"), ("e", "е"), ("f", "ф"), ("g", "г"), ("h", "х"), ("i", "и"), ("j", "дж"), ("k", "к"),
@@ -375,7 +402,7 @@ def spoken(text):
         w = m.group(0)
         if w.isupper() and 2 <= len(w) <= 4:
             return " ".join(_LETTER.get(c, c) for c in w)  # сокращение читаем по буквам
-        return translit(w.replace("'", "").replace("-", ""))
+        return eng_say(w.replace("'", "").replace("-", ""))
     t = re.sub(r"[A-Za-z][A-Za-z'\-]*", latin, t)  # всё, что осталось латиницей, голос не должен читать по-английски
 
     def pct(m):
@@ -471,15 +498,15 @@ def prosody(text, first=False, kind=""):
     last = t.rstrip("»\"')")[-1:]
     rate = pitch = vol = 0
     if last == "!":
-        rate, pitch, vol = 6, 5, 8
+        rate, pitch, vol = 3, 5, 8
     elif last == "?":
         rate, pitch = 2, 6
     elif last in ",;:—":
         pitch = 2
     else:
         rate, pitch = -2, -2  # спад к концу мысли: звучит уверенно и закончено
-    if first:  # первая фраза ролика, «крючок»: бодрее и громче
-        rate, pitch, vol = rate + 8, pitch + 3, vol + 10
+    if first:  # первая фраза ролика, «крючок»: громче и выразительнее, но не быстрее (иначе её не разобрать)
+        rate, pitch, vol = rate + 2, pitch + 3, vol + 8
     if kind == "cta":
         rate, pitch, vol = rate + 4, pitch + 3, vol + 4
     if re.search(r"\d|%", t):  # цифры чуть медленнее и громче, чтобы их было слышно
@@ -1347,7 +1374,7 @@ def _crop_layer(layer):
 
 
 CONTENT_DY, MASCOT_Y, BUBBLE_Y = -70, 985, 1000   # всё выше: низ экрана (~400 px) закрывает интерфейс TikTok
-KIN_CY, KIN_W = 610, 960                           # центр и ширина блока «бегущих» слов
+KIN_CY, KIN_W = 610, 930                           # центр и ширина блока «бегущих» слов (запас под наезд камеры)
 BURST_Y = {"kinetic": KIN_CY, "title": 440, "hero": 390, "cta": 480}
 PROPS = {"title": [("star", YELLOW, 250, 150, 340), ("cube", (70, 225, 95), 220, W - 150, 330)],
          "hero": [("star", YELLOW, 190, 120, 330), ("gem", (80, 175, 255), 190, W - 120, 330)],
@@ -1405,6 +1432,109 @@ def _scaled(img, sc):
     return img.resize((max(1, int(img.width * sc)), max(1, int(img.height * sc))), bot.Image.BICUBIC)
 
 
+# ---- объём кадра: шахматный пол в перспективе, свечение, виньетка, «живая» камера, конфетти
+FX_FULL = (os.environ.get("VIDEO_FX") or "full") != "lite"   # lite: без пола и свечения, сборка заметно быстрее
+FLOOR_Y, FLOOR_TW, FLOOR_SH, FLOOR_SQ = 900, 1400, 1400, 100
+FLOOR_LINES = [(120, 230, 255), (255, 220, 120), (255, 150, 220)]   # цвет линий пола по палитре фона
+_FLOORS, _FLOOR_COEFFS, _VIGNETTE = {}, {}, {}
+
+
+def make_floor(pal):
+    """Текстура пола: шашечки с линиями и дымкой у горизонта. Прокручивается и растягивается в перспективе (см. paste_floor)."""
+    if pal in _FLOORS:
+        return _FLOORS[pal]
+    from PIL import ImageChops
+    Image, ImageDraw = bot.Image, bot.ImageDraw
+    th = FLOOR_SH + 2 * FLOOR_SQ
+    tex = Image.new("RGBA", (FLOOR_TW, th), (0, 0, 0, 0))
+    d = ImageDraw.Draw(tex)
+    col = FLOOR_LINES[pal % len(FLOOR_LINES)]
+    for r in range(th // FLOOR_SQ):
+        for c in range(FLOOR_TW // FLOOR_SQ):
+            fill = (0, 0, 0, 80) if (r + c) % 2 == 0 else col + (34,)
+            d.rectangle((c * FLOOR_SQ, r * FLOOR_SQ, (c + 1) * FLOOR_SQ, (r + 1) * FLOOR_SQ), fill=fill)
+    for i in range(0, FLOOR_TW + 1, FLOOR_SQ):
+        d.line((i, 0, i, th), fill=col + (120,), width=4)
+    for j in range(0, th + 1, FLOOR_SQ):
+        d.line((0, j, FLOOR_TW, j), fill=col + (120,), width=4)
+    haze = Image.linear_gradient("L").resize((FLOOR_TW, th), Image.BILINEAR).point(lambda v: min(255, int(((v / 255) ** 1.5) * 300)))
+    tex.putalpha(ImageChops.multiply(tex.getchannel("A"), haze))  # вдали пол растворяется в дымке
+    _FLOORS[pal] = tex
+    return tex
+
+
+def paste_floor(frame, tex, gt):
+    """Пол бежит навстречу зрителю: окно текстуры сдвигается, гомография даёт настоящую перспективу.
+    Считается в половинном разрешении (пол и так в дымке), затем растягивается: вдвое быстрее."""
+    fh = H - FLOOR_Y
+    if "c" not in _FLOOR_COEFFS:
+        dst = [(W * 0.30 / 2, 0), (W * 0.70 / 2, 0), (W * 1.9 / 2, fh / 2), (-W * 0.9 / 2, fh / 2)]
+        _FLOOR_COEFFS["c"] = _coeffs(dst, [(0, 0), (FLOOR_TW, 0), (FLOOR_TW, FLOOR_SH), (0, FLOOR_SH)])
+    period = 2 * FLOOR_SQ
+    off = int(period - ((gt * 170) % period))
+    mode = getattr(bot.Image, "Transform", bot.Image).PERSPECTIVE
+    fl = tex.crop((0, off, FLOOR_TW, off + FLOOR_SH)).transform((W // 2, fh // 2), mode, _FLOOR_COEFFS["c"], bot.Image.BILINEAR)
+    fl = fl.resize((W, fh), bot.Image.BILINEAR)
+    frame.paste(fl, (0, FLOOR_Y), fl)
+
+
+def get_vignette():
+    if "v" not in _VIGNETTE:
+        Image = bot.Image
+        g = Image.radial_gradient("L").resize((W, H), Image.BICUBIC).point(lambda v: int(255 - 0.34 * 255 * (v / 255) ** 2))  # темнеют только края
+        _VIGNETTE["v"] = Image.merge("RGB", (g, g, g))
+    return _VIGNETTE["v"]
+
+
+def apply_bloom(frame, cache=None, refresh=True):
+    """Свечение ярких мест (текст, предметы): уменьшенная копия размывается и накладывается режимом screen.
+    Свечение меняется медленно, поэтому через кадр его можно брать из кэша (cache): вдвое дешевле."""
+    from PIL import ImageChops
+    Image, ImageFilter = bot.Image, bot.ImageFilter
+    if cache is not None and not refresh and "g" in cache:
+        glow = cache["g"]
+    else:
+        small = frame.resize((W // 4, H // 4), Image.BILINEAR)
+        glow = small.point(lambda v: max(0, v - 165) * 3).filter(ImageFilter.GaussianBlur(5)).resize((W, H), Image.BILINEAR)
+        if cache is not None:
+            cache["g"] = glow
+    return ImageChops.screen(frame, glow)
+
+
+def camera(frame, gt, k, n, punches, tt):
+    """Живая камера: медленный наезд на слайде, лёгкое покачивание, толчок на каждую новую фразу (обрезка и масштаб за один шаг)."""
+    z = 1.045 + 0.03 * (k / max(1, n - 1))
+    for st_ in punches:
+        q = tt - st_
+        if 0 <= q < 0.22:
+            z += 0.022 * (1 - q / 0.22)
+    w2, h2 = W / z, H / z
+    x0 = max(0.0, min(W - w2, (W - w2) / 2 + 7 * math.sin(gt * 0.9 + 1.0)))
+    y0 = max(0.0, min(H - h2, (H - h2) / 2 + 5 * math.cos(gt * 0.7)))
+    return frame.resize((W, H), bot.Image.BICUBIC, box=(x0, y0, x0 + w2, y0 + h2))
+
+
+CONFETTI_COLORS = [YELLOW, PINK, (0, 225, 235), GREEN, ORANGE, (255, 255, 255)]
+
+
+def confetti(frame, cx, cy, t, seed, n=26, life=0.8):
+    """Вспышка конфетти из точки (cx, cy): разлетается, падает и уменьшается за life секунд."""
+    if not 0 <= t < life:
+        return
+    rnd, d, p = random.Random(seed), bot.ImageDraw.Draw(frame), t / life
+    for i in range(n):
+        ang, sp = rnd.uniform(0, 2 * math.pi), rnd.uniform(380, 900)
+        col, sz, rot = rnd.choice(CONFETTI_COLORS), rnd.uniform(9, 20), rnd.uniform(0, math.pi)
+        dist = sp * t * (1 - 0.4 * p)
+        x, y = cx + math.cos(ang) * dist, cy + math.sin(ang) * dist + 700 * t * t
+        r = sz * (1 - 0.6 * p)
+        if i % 3 == 0:
+            d.ellipse((x - r, y - r, x + r, y + r), fill=col, outline=DARK, width=2)
+        else:
+            pts = [(x + r * math.cos(rot + a), y + r * 0.6 * math.sin(rot + a)) for a in (0.8, 2.34, 3.94, 5.48)]
+            d.polygon(pts, fill=col, outline=DARK)
+
+
 def render_frames(slides, bgs, particles, sprites, total):
     """Кадры ролика: яркий фон с параллаксом, вращающиеся 3D-предметы, комиксный взрыв за героем, слова «в такт» голосу,
     диктор-стикер, быстрые склейки (полоса-шторка, RGB-сдвиг, вспышка, наезд камеры)."""
@@ -1415,6 +1545,9 @@ def render_frames(slides, bgs, particles, sprites, total):
     ld.rounded_rectangle((36, 34, 546, 112), radius=39, fill=DARK + (235,), outline=(255, 255, 255, 240), width=4)
     ld.text((112, 73), "NEW BRAWL NEWS", font=bot.card_font(38), fill=(255, 255, 255, 255), anchor="lm")
     white = Image.new("RGB", (W, H), (255, 255, 255))
+    vignette = get_vignette()
+    bloom_cache = {}
+    floors = [make_floor(i) for i in range(len(bgs))] if FX_FULL else []
     starts, acc = [], 0
     for sl in slides:
         starts.append(acc)
@@ -1434,6 +1567,7 @@ def render_frames(slides, bgs, particles, sprites, total):
         by = sl.get("burst_y", 560)
         props = [(obj_frames(k_, c_, sz, 30), x_, y_) for k_, c_, sz, x_, y_ in sl.get("props", [])]
         ent = ENTRY[sl.get("anim", 0) % len(ENTRY)]
+        punches = [ph_["start"] for ph_ in kin] if kin else ([it["t0"] for it in bars["items"]] if bars else [])
         for k in range(n):
             gt = (done + k) / FPS
             kk = k * 24.0 / FPS  # длительность склеек задана в кадрах при 24 к/с
@@ -1444,13 +1578,15 @@ def render_frames(slides, bgs, particles, sprites, total):
                 oy += int(14 * math.cos(kk * 2.7) * (1 - kk / 6))
             frame = bg.crop((ox, oy, ox + W, oy + H))
             pe = _ease_out_back(min(1.0, k / POP_FRAMES))
+            if FX_FULL:
+                paste_floor(frame, floors[si % len(floors)], gt)
             for p in particles:
                 py = (p["y"] - p["v"] * gt) % (H + 300) - 150
                 px = p["x"] + p["sway"] * math.sin(gt * 0.9 + p["ph"])
                 spr = p["frames"][int(gt * p["rate"] + p["off"]) % len(p["frames"])] if "frames" in p else p["sp"]
                 frame.paste(spr, (int(px), int(py)), spr)
             if burst is not None:
-                b = _scaled(burst.rotate(gt * 16 + si * 30, resample=Image.BILINEAR), 0.55 + 0.45 * pe)
+                b = _scaled(burst.rotate(gt * 16 + si * 30, resample=Image.BILINEAR), (0.55 + 0.45 * pe) * (1 + 0.02 * math.sin(gt * 5)))
                 frame.paste(b, (W // 2 - b.width // 2, by - b.height // 2), b)
             for i, (frs, px_, py_) in enumerate(props):
                 spr = _scaled(frs[int(gt * 20 + i * 11) % len(frs)], 0.4 + 0.6 * pe)
@@ -1484,6 +1620,9 @@ def render_frames(slides, bgs, particles, sprites, total):
                 paste_kinetic(frame, kin, tt)
             if bars:
                 paste_bars(frame, bars, tt)
+            confetti(frame, W // 2, KIN_CY, tt, si * 7 + 1) if si > 0 else None  # на каждой смене слайда
+            for te, ex, ey in sl.get("emph", []):  # и на важных словах
+                confetti(frame, ex, ey, tt - te, int(te * 100) + si, n=18, life=0.7)
             # ведущий
             mouth = sl["mouth"][k] if k < len(sl["mouth"]) else 0
             if bubble is None and sl.get("kind") != "bars":  # без пузыря диктор крупнее: на текстовых слайдах он главный собеседник
@@ -1495,8 +1634,10 @@ def render_frames(slides, bgs, particles, sprites, total):
             if bubble is not None:
                 bb = _scaled(bubble, 0.7 + 0.3 * pe) if k < POP_FRAMES else bubble
                 frame.paste(bb, (400, BUBBLE_Y + (bubble.height - bb.height) // 2), bb)
-            if footer is not None:
-                frame.paste(footer, (FOOTER_X, FOOTER_Y), footer)
+            frame = camera(frame, gt, k, n, punches, tt)  # камера, свет и виньетка: картинка перестаёт быть плоской
+            if FX_FULL:
+                frame = apply_bloom(frame, bloom_cache, refresh=(k % 2 == 0))
+            frame = ImageChops.multiply(frame, vignette)
             for te, _ex, _ey in sl.get("emph", []):  # короткий наезд камеры на важное слово
                 q = tt - te
                 if 0 <= q < 0.18:
@@ -1518,6 +1659,8 @@ def render_frames(slides, bgs, particles, sprites, total):
                 dr.polygon([(x0 + 420, 0), (x0 + 470, 0), (x0 + 210, H), (x0 + 160, H)], fill=DARK)
             if si > 0 and kk < 2:  # вспышка на склейке
                 frame = Image.blend(frame, white, 0.35 - 0.15 * kk)
+            if footer is not None:  # обязательное уведомление вне камеры и свечения: всегда читается
+                frame.paste(footer, (FOOTER_X, FOOTER_Y), footer)
             frame.paste(logo, (0, 0), logo)
             dr = ImageDraw.Draw(frame)
             dr.ellipse((58, 62, 80, 84), fill=(255, 60, 70) if int(gt * 2) % 2 == 0 else (120, 30, 50))  # «эфир»
@@ -1903,7 +2046,7 @@ def build_kinetic(words, times):
                 idx += 1
                 hot, ang = _is_hot(w), (-3, 2, -2, 3, 0)[gi % 5]
                 items.append({"n": _kin_sprite(w, f, hot, False, ang), "c": _kin_sprite(w, f, hot, True, ang),
-                              "cx": wx, "cy": yc, "t0": times[gi][0], "t1": times[gi][1], "hot": hot})
+                              "cx": wx, "cy": yc, "t0": times[gi][0], "t1": times[gi][1], "hot": hot, "ph": gi})
         phrases.append({"start": times[g[0]][0], "words": items})
     return phrases
 
@@ -1931,7 +2074,10 @@ def paste_kinetic(frame, kin, tt):
         if w.get("hot"):  # важное слово «бьёт» сильнее: крупный отскок
             sc *= 1 + 0.28 * max(0.0, 1 - age / 0.32)
         spr = _scaled(spr, sc)
-        frame.paste(spr, (int(w["cx"] - spr.width / 2), int(w["cy"] - spr.height / 2)), spr)
+        if age < 0.22:  # слово влетает с объёмным поворотом, как карточка
+            spr = tilt(spr, (1 - age / 0.22) * 0.9 * (1 if w.get("ph", 0) % 2 == 0 else -1))
+        fy = 5 * math.sin(tt * 3 + w.get("ph", 0))  # слова слегка «дышат»
+        frame.paste(spr, (int(w["cx"] - spr.width / 2), int(w["cy"] - spr.height / 2 + fy)), spr)
 
 
 def render_video(specs, out_path, vstate=None, seed=0, host=None):
@@ -2013,7 +2159,7 @@ def render_video(specs, out_path, vstate=None, seed=0, host=None):
 
 
 # ===================== СЦЕНАРИИ РОЛИКОВ =====================
-CTA_SPEECH = "Больше разборов и гайдов в нашем телеграм-канале. Сканируй код и подписывайся!"
+CTA_SPEECH = "Больше гайдов в нашем телеграм-канале. Сканируй код и подписывайся!"
 ORD = {1: "Первое", 2: "Второе", 3: "Третье"}
 
 
@@ -2044,8 +2190,8 @@ def _short(text, n=130):
 
 
 CTA_SPEECHES = [CTA_SPEECH,
-                "Свежая мета и гайды каждый день в телеграм-канале. Сканируй код и подписывайся!",
-                "Не пропускай новости Бравл Старс! Сканируй код и жми подписаться!"]
+                "Свежая мета каждый день в телеграм-канале. Сканируй код и подписывайся!",
+                "Не пропускай новости Бравл Старс! Сканируй код и подписывайся!"]
 HOOKS = [("Кто сильнее всех?", "мета Brawl Stars сегодня", "Мета Бравл Старс сегодня! Кто сильнее всех?"),
          ("Кто ломает мету?", "топ бойцов за сутки", "Вот кто сейчас ломает мету в Бравл Старс!"),
          ("Топ бойцов дня", "что берут лучшие игроки", "Топ бойцов за сутки! Угадаешь, кто первый?")]
@@ -2134,7 +2280,9 @@ def script_newbrawler(nb):
     name = nb.get("name")
     if not name:
         return None
-    gad, stars, hyp = nb.get("gadgets") or [], nb.get("stars") or [], nb.get("hypers") or []
+    gad = [ru_ability_name(x) for x in (nb.get("gadgets") or [])]
+    stars = [ru_ability_name(x) for x in (nb.get("stars") or [])]
+    hyp = [ru_ability_name(x) for x in (nb.get("hypers") or [])]
     por = _portraits([name]).get(name.upper())
     parts = []
     if gad:
@@ -2207,29 +2355,63 @@ def script_quiz(state):
             "caption": "🎯 Угадай бойца Brawl Stars по пикселям! Ответ в конце ролика. Угадали?"}
 
 
+def _sane(text):
+    """Перевод пригоден для ролика: непустой, без служебных меток и без россыпи латиницы."""
+    t = (text or "").strip()
+    return len(t) >= 8 and not re.search(r"ZZ\d", t) and len(re.findall(r"[A-Za-z]", t)) <= 0.3 * len(t)
+
+
+def _trim_desc(text, limit=95):
+    """Описание способности для ролика: первое предложение, а длинное обрезается по запятой или слову (3-4 секунды речи)."""
+    t = re.sub(r"\s+", " ", (text or "").strip())
+    first = re.split(r"(?<=[.!?…])\s", t)[0]
+    if len(first) <= limit:
+        return first.rstrip(" ,;:") + ("" if first.endswith((".", "!", "?", "…")) else ".")
+    cut = first[:limit]
+    k = max(cut.rfind(", "), cut.rfind(" "))
+    return cut[:k if k > 30 else limit].rstrip(" ,;:") + "."
+
+
+_NAME_CACHE = {}
+
+
+def ru_ability_name(n):
+    """Русское название способности для озвучки (английское читалось неправильно). Нет перевода: исходное."""
+    if n not in _NAME_CACHE:
+        try:
+            t = re.sub(r"\s+", " ", bot.translate(n)).strip(" .")
+        except Exception:
+            t = ""
+        _NAME_CACHE[n] = (t[:1].upper() + t[1:]) if t else n
+    return _NAME_CACHE[n]
+
+
 def script_guide(b, state):
-    """Ролик «Гайд на бойца» по тем же данным, что и гайд в канале. Тексты не режутся: длинное делится на экраны."""
+    """Ролик «Гайд на бойца»: сначала самое важное (имя, класс, цифра), затем совет, способности и вопрос зрителю.
+    Описание-«лор» не используется: после машинного перевода оно превращается в бессмыслицу."""
     info = bot.guide_info(b, state)
-    por = _portraits([info["name"]]).get(info["name"].upper())
-    specs = [{"layer": L_hero(info["name"], info["cls_ru"] or "гайд", info["short_stat"], por),
-              "speech": f"Гайд на бойца {info['name']}!" + (f" Это {info['cls_ru']}." if info["cls_ru"] else ""),
-              "caption": f"Гайд: {info['name']}", "priority": 10, "accent": PURPLE, "kind": "hero"}]
-    if info["desc"]:
-        specs += text_specs("Кто это", info["desc"], BLUE, 4)
-    for label, rows, accent, prio in (("Гаджет", info["gadgets"], ORANGE, 7), ("Звёздная сила", info["stars"], PINK, 7),
-                                      ("Гиперзаряд", info.get("hypers") or [], PURPLE, 5)):
-        for n, d in [r for r in rows if r[1]][:1]:
-            specs += text_specs(label, f"{n}: {d}", accent, prio, say_first=label + ".")
-    if info["short_stat"]:
-        specs += text_specs("Данные топ-игроков", f"У лучших игроков мира {info['short_stat']}.", GREEN, 6)
+    name, cls = info["name"], info["cls_ru"]
+    por = _portraits([name]).get(name.upper())
+    hero_say = (f"Гайд на бойца {name}!" + (f" Класс: {cls}." if cls else "")
+                + (f" У лучших игроков мира {info['short_stat']}." if info["short_stat"] else ""))
+    specs = [{"layer": L_hero(name, cls or "гайд", info["short_stat"], por), "speech": hero_say,
+              "caption": f"Гайд: {name}", "priority": 10, "accent": PURPLE, "kind": "hero"}]
     if info["tip"]:
         specs += text_specs("Как играть", info["tip"], BLUE, 8)
-    specs += text_specs("Важно", "Это универсальный разбор. Выбирай под карту и режим.", RED, 9)
+    for label, rows, ru_names, accent, prio in (("Гаджет", info["gadgets"], info.get("gadgets_ru") or [], ORANGE, 7),
+                                                ("Звёздная сила", info["stars"], info.get("stars_ru") or [], PINK, 7),
+                                                ("Гиперзаряд", info.get("hypers") or [], info.get("hypers_ru") or [], PURPLE, 5)):
+        if not rows:
+            continue
+        idx = next((i for i, r in enumerate(rows) if _sane(r[1])), 0)
+        ru = ru_names[idx] if idx < len(ru_names) else ru_ability_name(rows[idx][0])
+        body = f"{ru}: {_trim_desc(rows[idx][1])}" if _sane(rows[idx][1]) else f"{ru}."
+        specs += text_specs(label, body, accent, prio, say_first=label + ".")
     specs.append(cta_spec("Играешь за этого бойца?"))
     if len(specs) < 4:
         return None
-    return {"kind": "guide", "specs": specs, "host": (por, info["name"]) if por else None,
-            "caption": f"📘 Гайд на {info['name']} в Brawl Stars: что умеет и как играть. Играете за него?"}
+    return {"kind": "guide", "specs": specs, "host": (por, name) if por else None,
+            "caption": f"📘 Гайд на {name} в Brawl Stars: что умеет и как играть. Играете за него?"}
 
 
 DEMO_LONG = ("Длинный текст теперь не обрезается и не теряет смысл. Если он не помещается на один экран, "
